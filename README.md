@@ -37,6 +37,21 @@ npm run build    # installer release (di src-tauri/../target/release/bundle)
 cargo test       # tes engine (segmentasi, pause/resume, limiter, merging, antrean)
 ```
 
+### Build release Windows
+
+```bash
+./scripts/build-windows.sh
+```
+
+Menghasilkan installer `target/x86_64-pc-windows-msvc/release/bundle/nsis/NBS Download Manager_<versi>_x64-setup.exe`
+(per-user, tanpa hak admin; `nbs-native-host.exe` ikut terpasang di samping aplikasi). Script ini jalan langsung di Windows
+(Git Bash), dan dari Linux/macOS lewat cross-compile `cargo-xwin` (perlu `rustup target add x86_64-pc-windows-msvc`,
+`cargo install --locked cargo-xwin`, serta `nsis`, `lld`, `llvm`, `clang`). Installer MSI hanya bisa dibuat di Windows:
+`BUNDLES=nsis,msi ./scripts/build-windows.sh`.
+
+Workflow GitHub Actions `.github/workflows/windows-release.yml` membuat installer NSIS + MSI di runner Windows (jalankan manual
+dari tab *Actions*, atau push tag `v*` untuk membuat draft release berisi installer).
+
 ## Memasang ekstensi browser
 
 - **Chrome / Edge / Brave**: buka `chrome://extensions`, aktifkan *Developer mode*, klik *Load unpacked*, pilih folder `extension/`.
