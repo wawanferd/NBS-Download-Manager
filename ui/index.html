@@ -1,0 +1,305 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>NBS Download Manager</title>
+    <link rel="stylesheet" href="styles.css" />
+  </head>
+  <body>
+    <div class="app">
+      <aside class="sidebar">
+        <div class="brand">
+          <img src="logo.svg" alt="" class="brand-logo" />
+          <div class="brand-text">
+            <strong>NBS</strong>
+            <span>Download Manager</span>
+          </div>
+        </div>
+
+        <button class="btn btn-primary btn-block" id="btn-add" title="New download (Ctrl+N)">
+          <span data-icon="plus"></span> New download
+        </button>
+
+        <nav class="nav" id="nav">
+          <button class="nav-item active" data-filter="all"><span data-icon="layers"></span><span>All downloads</span><span class="count" data-count="all">0</span></button>
+          <button class="nav-item" data-filter="active"><span data-icon="arrowDown"></span><span>Downloading</span><span class="count" data-count="active">0</span></button>
+          <button class="nav-item" data-filter="queued"><span data-icon="hourglass"></span><span>Queued</span><span class="count" data-count="queued">0</span></button>
+          <button class="nav-item" data-filter="paused"><span data-icon="pauseCircle"></span><span>Paused</span><span class="count" data-count="paused">0</span></button>
+          <button class="nav-item" data-filter="completed"><span data-icon="checkCircle"></span><span>Completed</span><span class="count" data-count="completed">0</span></button>
+          <button class="nav-item" data-filter="failed"><span data-icon="alert"></span><span>Failed</span><span class="count" data-count="failed">0</span></button>
+        </nav>
+
+        <div class="sidebar-bottom">
+          <label class="limit-card">
+            <span class="limit-label"><span data-icon="gauge"></span> Speed limit</span>
+            <select id="global-limit" class="select-compact">
+              <option value="0">Unlimited</option>
+              <option value="262144">256 KB/s</option>
+              <option value="524288">512 KB/s</option>
+              <option value="1048576">1 MB/s</option>
+              <option value="2097152">2 MB/s</option>
+              <option value="5242880">5 MB/s</option>
+              <option value="10485760">10 MB/s</option>
+              <option value="custom">Custom…</option>
+            </select>
+          </label>
+          <button class="bridge-card" id="bridge-card" title="Browser integration settings">
+            <span class="dot" id="bridge-dot"></span>
+            <span class="bridge-text">
+              <span class="bridge-title">Browser integration</span>
+              <span class="bridge-sub" id="bridge-sub">Starting…</span>
+            </span>
+          </button>
+        </div>
+      </aside>
+
+      <main class="main">
+        <header class="topbar">
+          <div class="title-block">
+            <h1 id="view-title">All downloads</h1>
+            <p class="subtitle" id="view-subtitle">0 items</p>
+          </div>
+          <div class="topbar-actions">
+            <label class="search">
+              <span data-icon="search"></span>
+              <input id="search" type="search" placeholder="Search downloads" autocomplete="off" spellcheck="false" />
+            </label>
+            <button class="icon-btn" id="btn-resume-all" title="Resume all"><span data-icon="play"></span></button>
+            <button class="icon-btn" id="btn-pause-all" title="Pause all"><span data-icon="pause"></span></button>
+            <button class="icon-btn" id="btn-clear" title="Clear completed from list"><span data-icon="checkCheck"></span></button>
+            <button class="icon-btn" id="btn-theme" title="Toggle theme"><span data-icon="moon"></span></button>
+            <button class="icon-btn" id="btn-settings" title="Settings"><span data-icon="settings"></span></button>
+          </div>
+        </header>
+
+        <section class="stats">
+          <div class="stat stat-speed">
+            <div class="stat-text">
+              <div class="stat-label">Total speed</div>
+              <div class="stat-value" id="stat-speed">0 B/s</div>
+              <div class="stat-hint" id="stat-limit-hint">No limit</div>
+            </div>
+            <canvas id="sparkline" aria-hidden="true"></canvas>
+          </div>
+          <div class="stat">
+            <div class="stat-label">Active</div>
+            <div class="stat-value" id="stat-active">0</div>
+            <div class="stat-hint" id="stat-active-hint">of 3 slots</div>
+          </div>
+          <div class="stat">
+            <div class="stat-label">Remaining</div>
+            <div class="stat-value" id="stat-remaining">—</div>
+            <div class="stat-hint" id="stat-remaining-hint">nothing pending</div>
+          </div>
+          <div class="stat">
+            <div class="stat-label">Completed</div>
+            <div class="stat-value" id="stat-completed">0</div>
+            <div class="stat-hint" id="stat-completed-hint">0 B total</div>
+          </div>
+        </section>
+
+        <section class="list" id="list" aria-live="polite"></section>
+
+        <div class="empty" id="empty" hidden>
+          <div class="empty-icon"><span data-icon="inbox"></span></div>
+          <h2 id="empty-title">No downloads yet</h2>
+          <p id="empty-text">Paste a link or press <kbd>Ctrl</kbd> + <kbd>N</kbd> to start. Downloads from your browser appear here automatically once the extension is installed.</p>
+          <button class="btn btn-primary" id="btn-empty-add"><span data-icon="plus"></span> New download</button>
+        </div>
+      </main>
+    </div>
+
+    <!-- New download -->
+    <dialog class="dialog" id="dlg-add">
+      <form id="add-form" method="dialog" novalidate>
+        <header class="dialog-head">
+          <div>
+            <h2>New download</h2>
+            <p class="dialog-sub" id="add-source">Enter a link to download</p>
+          </div>
+          <button type="button" class="icon-btn" data-close title="Close"><span data-icon="x"></span></button>
+        </header>
+        <div class="dialog-body">
+          <div class="field">
+            <label for="add-url">Address</label>
+            <div class="input-icon">
+              <span data-icon="link"></span>
+              <input id="add-url" type="url" placeholder="https://example.com/file.zip" autocomplete="off" spellcheck="false" required />
+            </div>
+          </div>
+
+          <div class="probe" id="probe" data-state="idle">
+            <div class="probe-badge file-badge" id="probe-badge">FILE</div>
+            <div class="probe-body">
+              <div class="probe-title" id="probe-title">—</div>
+              <div class="probe-meta" id="probe-meta"></div>
+            </div>
+            <div class="spinner" aria-hidden="true"></div>
+          </div>
+
+          <div class="field">
+            <label for="add-name">File name</label>
+            <input id="add-name" type="text" placeholder="Detected automatically" autocomplete="off" spellcheck="false" />
+          </div>
+
+          <div class="field">
+            <label for="add-dir">Save to</label>
+            <div class="input-group">
+              <input id="add-dir" type="text" autocomplete="off" spellcheck="false" />
+              <button type="button" class="btn btn-secondary" id="add-browse"><span data-icon="folder"></span> Browse</button>
+            </div>
+          </div>
+
+          <div class="field-row">
+            <div class="field">
+              <label for="add-conn">Connections <output id="add-conn-out" class="pill-count">8</output></label>
+              <input id="add-conn" type="range" min="1" max="8" value="8" />
+              <div class="conn-viz" id="add-conn-viz"></div>
+            </div>
+            <div class="field">
+              <label for="add-limit">Speed limit</label>
+              <div class="input-suffix">
+                <input id="add-limit" type="number" min="0" step="1" placeholder="Unlimited" />
+                <span>KB/s</span>
+              </div>
+            </div>
+          </div>
+
+          <label class="switch-row">
+            <input type="checkbox" id="add-start" checked />
+            <span class="switch"></span>
+            <span>Start downloading immediately</span>
+          </label>
+        </div>
+        <footer class="dialog-foot">
+          <button type="button" class="btn btn-ghost" data-close>Cancel</button>
+          <button type="submit" class="btn btn-primary" id="add-submit"><span data-icon="download"></span> Download</button>
+        </footer>
+      </form>
+    </dialog>
+
+    <!-- Settings -->
+    <dialog class="dialog dialog-wide" id="dlg-settings">
+      <form id="settings-form" method="dialog" novalidate>
+        <header class="dialog-head">
+          <div>
+            <h2>Settings</h2>
+            <p class="dialog-sub" id="settings-version">NBS Download Manager</p>
+          </div>
+          <button type="button" class="icon-btn" data-close title="Close"><span data-icon="x"></span></button>
+        </header>
+        <div class="dialog-body settings-body">
+          <section class="settings-section">
+            <h3>Downloads</h3>
+            <div class="field">
+              <label for="set-dir">Default folder</label>
+              <div class="input-group">
+                <input id="set-dir" type="text" spellcheck="false" />
+                <button type="button" class="btn btn-secondary" id="set-browse"><span data-icon="folder"></span> Browse</button>
+              </div>
+            </div>
+            <div class="field-row">
+              <div class="field">
+                <label for="set-conn">Connections per download <output id="set-conn-out" class="pill-count">8</output></label>
+                <input id="set-conn" type="range" min="1" max="8" />
+              </div>
+              <div class="field">
+                <label for="set-concurrent">Simultaneous downloads</label>
+                <input id="set-concurrent" type="number" min="1" max="16" />
+              </div>
+            </div>
+            <div class="field">
+              <label for="set-limit">Global speed limit</label>
+              <div class="input-suffix">
+                <input id="set-limit" type="number" min="0" placeholder="Unlimited" />
+                <span>KB/s</span>
+              </div>
+            </div>
+          </section>
+
+          <section class="settings-section">
+            <h3>Browser integration</h3>
+            <div class="integration-status" id="set-bridge-status"></div>
+            <div class="field-row">
+              <div class="field">
+                <label for="set-port">WebSocket port</label>
+                <input id="set-port" type="number" min="1024" max="65535" />
+              </div>
+              <div class="field field-end">
+                <label class="switch-row">
+                  <input type="checkbox" id="set-autostart" />
+                  <span class="switch"></span>
+                  <span>Start captured downloads without asking</span>
+                </label>
+              </div>
+            </div>
+            <div class="field">
+              <label>Native messaging host <span class="label-hint">(optional — lets the extension launch the app)</span></label>
+              <div class="btn-row" id="native-buttons">
+                <button type="button" class="btn btn-secondary btn-sm" data-browser="chrome">Chrome</button>
+                <button type="button" class="btn btn-secondary btn-sm" data-browser="edge">Edge</button>
+                <button type="button" class="btn btn-secondary btn-sm" data-browser="brave">Brave</button>
+                <button type="button" class="btn btn-secondary btn-sm" data-browser="chromium">Chromium</button>
+                <button type="button" class="btn btn-secondary btn-sm" data-browser="firefox">Firefox</button>
+              </div>
+            </div>
+            <p class="help" id="set-ext-ids"></p>
+          </section>
+
+          <section class="settings-section">
+            <h3>Appearance &amp; behavior</h3>
+            <div class="field">
+              <label>Theme</label>
+              <div class="segmented" id="set-theme">
+                <button type="button" data-value="system">System</button>
+                <button type="button" data-value="light">Light</button>
+                <button type="button" data-value="dark">Dark</button>
+              </div>
+            </div>
+            <label class="switch-row">
+              <input type="checkbox" id="set-tray" />
+              <span class="switch"></span>
+              <span>Keep running in the system tray when the window is closed</span>
+            </label>
+            <label class="switch-row">
+              <input type="checkbox" id="set-notify" />
+              <span class="switch"></span>
+              <span>Show a notification when a download finishes</span>
+            </label>
+          </section>
+        </div>
+        <footer class="dialog-foot">
+          <button type="button" class="btn btn-ghost" data-close>Cancel</button>
+          <button type="submit" class="btn btn-primary">Save changes</button>
+        </footer>
+      </form>
+    </dialog>
+
+    <!-- Generic confirm / prompt -->
+    <dialog class="dialog dialog-small" id="dlg-confirm">
+      <form method="dialog">
+        <div class="dialog-body confirm-body">
+          <h2 id="confirm-title">Are you sure?</h2>
+          <p id="confirm-text"></p>
+          <div class="field" id="confirm-field" hidden>
+            <div class="input-suffix">
+              <input id="confirm-input" type="number" min="0" />
+              <span id="confirm-suffix">KB/s</span>
+            </div>
+          </div>
+        </div>
+        <footer class="dialog-foot">
+          <button type="button" class="btn btn-ghost" data-close>Cancel</button>
+          <button type="submit" class="btn btn-primary" id="confirm-ok" value="ok">OK</button>
+        </footer>
+      </form>
+    </dialog>
+
+    <div class="menu" id="menu" role="menu" hidden></div>
+    <div class="toasts" id="toasts"></div>
+
+    <script src="icons.js"></script>
+    <script src="app.js"></script>
+  </body>
+</html>

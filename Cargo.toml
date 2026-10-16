@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["crates/nbs-core"]
+members = ["crates/nbs-core", "src-tauri", "native-host"]
 
 [workspace.package]
 version = "1.0.0"

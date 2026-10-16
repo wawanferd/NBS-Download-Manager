@@ -1,0 +1,15 @@
+{
+  "name": "nbs-download-manager",
+  "private": true,
+  "version": "1.0.0",
+  "description": "NBS Download Manager — Rust + Tauri segmented download manager",
+  "scripts": {
+    "tauri": "tauri",
+    "dev": "cargo build -p nbs-native-host && tauri dev",
+    "build": "cargo build --release -p nbs-native-host && tauri build",
+    "icons": "tauri icon assets/logo.svg -o src-tauri/icons"
+  },
+  "devDependencies": {
+    "@tauri-apps/cli": "^2"
+  }
+}
