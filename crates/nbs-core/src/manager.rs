@@ -89,7 +89,7 @@ impl Handle {
         let speed = self.speed.lock().get();
         let downloaded = rec.downloaded();
         let eta = match (rec.total_size, speed) {
-            (Some(total), s) if s > 0 && rec.status == Status::Downloading => Some(total.saturating_sub(downloaded) / s),
+            (Some(total), s) if s > 0 && rec.status == Status::Downloading => Some(total.saturating_sub(downloaded).div_ceil(s)),
             _ => None,
         };
         DownloadView {

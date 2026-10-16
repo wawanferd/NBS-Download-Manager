@@ -35,7 +35,7 @@ impl Default for Settings {
             auto_start_browser: false,
             close_to_tray: true,
             notify_on_complete: true,
-            theme: "system".into(),
+            theme: "dark".into(),
         }
     }
 }

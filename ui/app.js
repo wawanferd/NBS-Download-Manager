@@ -7,37 +7,55 @@ const $ = (sel, root = document) => root.querySelector(sel);
 const $$ = (sel, root = document) => [...root.querySelectorAll(sel)];
 
 const ACTIVE = new Set(['connecting', 'downloading', 'merging']);
-const FILTERS = {
-  all: { title: 'All downloads', match: () => true },
-  active: { title: 'Downloading', match: (d) => ACTIVE.has(d.status) },
-  queued: { title: 'Queued', match: (d) => d.status === 'queued' },
-  paused: { title: 'Paused', match: (d) => d.status === 'paused' },
-  completed: { title: 'Completed', match: (d) => d.status === 'completed' },
-  failed: { title: 'Failed', match: (d) => d.status === 'failed' },
-};
 const STATUS_LABEL = {
   queued: 'Queued',
   connecting: 'Connecting',
   downloading: 'Downloading',
   paused: 'Paused',
   merging: 'Merging',
-  completed: 'Completed',
+  completed: 'Complete',
   failed: 'Failed',
 };
 
+const CATEGORIES = {
+  archive: { label: 'Compressed', icon: 'archive', ext: ['zip', 'rar', '7z', 'tar', 'gz', 'tgz', 'bz2', 'xz', 'zst', 'cab'] },
+  video: { label: 'Video', icon: 'video', ext: ['mp4', 'mkv', 'avi', 'mov', 'webm', 'flv', 'wmv', 'm4v', 'ts', 'mpg', 'mpeg'] },
+  audio: { label: 'Music', icon: 'music', ext: ['mp3', 'flac', 'wav', 'ogg', 'm4a', 'aac', 'opus', 'wma'] },
+  app: { label: 'Program', icon: 'program', ext: ['exe', 'msi', 'dmg', 'pkg', 'deb', 'rpm', 'appimage', 'apk', 'iso', 'img', 'bin', 'jar'] },
+  doc: { label: 'Document', icon: 'fileText', ext: ['pdf', 'doc', 'docx', 'xls', 'xlsx', 'ppt', 'pptx', 'txt', 'odt', 'ods', 'epub', 'csv', 'md', 'rtf'] },
+  image: { label: 'Image', icon: 'image', ext: ['png', 'jpg', 'jpeg', 'gif', 'webp', 'svg', 'bmp', 'tiff', 'heic', 'avif', 'psd'] },
+  other: { label: 'File', icon: 'file', ext: [] },
+};
+
+const FILTERS = {
+  all: { title: 'All Downloads', match: () => true },
+  active: { title: 'Downloading', match: (d) => ACTIVE.has(d.status) || d.status === 'queued' },
+  unfinished: { title: 'Unfinished', match: (d) => d.status !== 'completed' },
+  completed: { title: 'Finished', match: (d) => d.status === 'completed' },
+  failed: { title: 'Failed', match: (d) => d.status === 'failed' },
+};
+for (const [key, cat] of Object.entries(CATEGORIES)) {
+  FILTERS[`cat:${key}`] = { title: key === 'other' ? 'Other files' : `${cat.label}${cat.label.endsWith('c') ? '' : 's'}`, match: (d) => category(d.fileName) === key };
+}
+FILTERS['cat:archive'].title = 'Compressed';
+FILTERS['cat:audio'].title = 'Music';
+
 const state = {
   downloads: new Map(),
-  elements: new Map(),
-  expanded: new Set(),
+  rows: new Map(),
+  selected: new Set(),
+  focus: null,
+  anchor: null,
   filter: 'all',
   search: '',
+  sort: { key: 'added', dir: -1 },
   settings: null,
   bridge: null,
   appInfo: null,
   speedHistory: new Array(60).fill(0),
 };
 
-/* ---------- Formatting ---------- */
+/* ---------- Helpers ---------- */
 
 function fmtBytes(n) {
   if (n == null || Number.isNaN(n)) return '—';
@@ -47,61 +65,60 @@ function fmtBytes(n) {
     n /= 1024;
     i++;
   }
-  const digits = i === 0 ? 0 : n < 10 ? 2 : n < 100 ? 1 : 0;
-  return `${n.toFixed(digits)} ${units[i]}`;
+  return `${n.toFixed(i === 0 ? 0 : n < 10 ? 2 : n < 100 ? 1 : 0)} ${units[i]}`;
 }
-
 const fmtSpeed = (n) => `${fmtBytes(n || 0)}/s`;
 
 function fmtEta(s) {
   if (s == null) return '—';
-  if (s < 60) return `${s}s`;
-  if (s < 3600) return `${Math.floor(s / 60)}m ${s % 60}s`;
+  if (s < 60) return `${s} sec`;
+  if (s < 3600) return `${Math.floor(s / 60)} min ${s % 60} sec`;
   const h = Math.floor(s / 3600);
-  if (h >= 48) return `${Math.floor(h / 24)}d ${h % 24}h`;
-  return `${h}h ${Math.floor((s % 3600) / 60)}m`;
+  if (h >= 48) return `${Math.floor(h / 24)} d ${h % 24} h`;
+  return `${h} h ${Math.floor((s % 3600) / 60)} min`;
 }
 
-function fmtDate(ms) {
+function fmtDate(ms, long = false) {
   if (!ms) return '—';
-  return new Date(ms).toLocaleString(undefined, { dateStyle: 'medium', timeStyle: 'short' });
+  const d = new Date(ms);
+  const today = new Date();
+  if (!long && d.toDateString() === today.toDateString()) return `Today, ${d.toLocaleTimeString(undefined, { hour: 'numeric', minute: '2-digit' })}`;
+  return d.toLocaleString(undefined, long ? { dateStyle: 'medium', timeStyle: 'short' } : { year: 'numeric', month: '2-digit', day: '2-digit' });
 }
-
-const limitLabel = (bytes) => (bytes ? fmtSpeed(bytes) : 'Unlimited');
 
 function escapeHtml(s) {
   return String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]);
 }
 
-const FILE_KINDS = {
-  archive: ['zip', 'rar', '7z', 'tar', 'gz', 'tgz', 'bz2', 'xz', 'zst'],
-  video: ['mp4', 'mkv', 'avi', 'mov', 'webm', 'flv', 'wmv', 'm4v', 'ts'],
-  audio: ['mp3', 'flac', 'wav', 'ogg', 'm4a', 'aac', 'opus', 'wma'],
-  image: ['png', 'jpg', 'jpeg', 'gif', 'webp', 'svg', 'bmp', 'tiff', 'heic', 'avif'],
-  doc: ['pdf', 'doc', 'docx', 'xls', 'xlsx', 'ppt', 'pptx', 'txt', 'odt', 'epub', 'csv', 'md'],
-  app: ['exe', 'msi', 'dmg', 'pkg', 'deb', 'rpm', 'appimage', 'apk', 'iso', 'img', 'bin'],
-  code: ['js', 'json', 'py', 'rs', 'html', 'css', 'xml', 'sh'],
-};
-
-function fileKind(name) {
-  const ext = (name.includes('.') ? name.split('.').pop() : '').toLowerCase();
-  const kind = Object.keys(FILE_KINDS).find((k) => FILE_KINDS[k].includes(ext));
-  return { ext: ext ? ext.slice(0, 4).toUpperCase() : 'FILE', kind: kind || 'other' };
+function category(name) {
+  const ext = (name || '').includes('.') ? name.split('.').pop().toLowerCase() : '';
+  return Object.keys(CATEGORIES).find((k) => CATEGORIES[k].ext.includes(ext)) || 'other';
 }
 
-function setBadge(el, name) {
-  const { ext, kind } = fileKind(name || '');
-  el.textContent = ext;
-  el.className = `${el.classList.contains('probe-badge') ? 'probe-badge ' : ''}file-badge badge-${kind}`;
+function host(url) {
+  try {
+    return new URL(url).host;
+  } catch {
+    return '';
+  }
 }
+
+function setTile(el, name) {
+  const cat = category(name);
+  const size = el.classList.contains('ftile-lg') ? ' ftile-lg' : '';
+  el.className = `ftile${size} cat-${cat}`;
+  el.innerHTML = icon(CATEGORIES[cat].icon);
+}
+
+const isUrl = (s) => /^https?:\/\/\S+$/i.test((s || '').trim());
+const progress = (d) => (d.status === 'completed' ? 1 : d.totalSize ? Math.min(1, d.downloaded / d.totalSize) : 0);
 
 /* ---------- Toasts, menu, dialogs ---------- */
 
 function toast(message, type = 'info', timeout = 3800) {
   const el = document.createElement('div');
   el.className = `toast ${type}`;
-  const name = type === 'success' ? 'checkCircle' : type === 'error' ? 'alert' : 'info';
-  el.innerHTML = `${icon(name)}<span>${escapeHtml(message)}</span>`;
+  el.innerHTML = `${icon(type === 'success' ? 'checkCircle' : type === 'error' ? 'alert' : 'info')}<span>${escapeHtml(message)}</span>`;
   $('#toasts').append(el);
   setTimeout(() => {
     el.classList.add('hide');
@@ -122,7 +139,7 @@ function closeMenu() {
   $('#menu').hidden = true;
 }
 
-function openMenu(anchor, entries) {
+function openMenu(entries, x, y) {
   const menu = $('#menu');
   menu.innerHTML = '';
   for (const entry of entries) {
@@ -141,11 +158,10 @@ function openMenu(anchor, entries) {
     menu.append(btn);
   }
   menu.hidden = false;
-  const r = anchor.getBoundingClientRect();
   const w = menu.offsetWidth;
   const h = menu.offsetHeight;
-  menu.style.left = `${Math.max(8, Math.min(r.right - w, innerWidth - w - 8))}px`;
-  menu.style.top = `${r.bottom + h + 6 > innerHeight ? r.top - h - 6 : r.bottom + 6}px`;
+  menu.style.left = `${Math.max(8, Math.min(x, innerWidth - w - 8))}px`;
+  menu.style.top = `${Math.max(8, y + h > innerHeight - 8 ? y - h : y)}px`;
 }
 
 function setupDialog(dlg) {
@@ -155,8 +171,11 @@ function setupDialog(dlg) {
   });
 }
 
-/** Small confirm/prompt dialog. Resolves to true/false, or the number entered. */
-function ask({ title, text = '', ok = 'OK', danger = false, input = null }) {
+/**
+ * Small confirm/prompt dialog. Resolves to false/true, the number entered
+ * (`input`), or `{ ok, checked }` when a checkbox is shown.
+ */
+function ask({ title, text = '', ok = 'OK', danger = false, input = null, checkbox = null }) {
   const dlg = $('#dlg-confirm');
   $('#confirm-title').textContent = title;
   $('#confirm-text').textContent = text;
@@ -169,6 +188,11 @@ function ask({ title, text = '', ok = 'OK', danger = false, input = null }) {
     $('#confirm-input').placeholder = input.placeholder ?? '';
     $('#confirm-suffix').textContent = input.suffix ?? '';
   }
+  $('#confirm-check-row').hidden = !checkbox;
+  if (checkbox) {
+    $('#confirm-check-label').textContent = checkbox.label;
+    $('#confirm-check').checked = !!checkbox.checked;
+  }
   dlg.returnValue = '';
   dlg.showModal();
   if (input) $('#confirm-input').select();
@@ -176,116 +200,72 @@ function ask({ title, text = '', ok = 'OK', danger = false, input = null }) {
     dlg.addEventListener(
       'close',
       () => {
-        if (dlg.returnValue !== 'ok') return resolve(input ? null : false);
-        resolve(input ? Number($('#confirm-input').value || 0) : true);
+        const confirmed = dlg.returnValue === 'ok';
+        if (input) return resolve(confirmed ? Number($('#confirm-input').value || 0) : null);
+        if (checkbox) return resolve({ ok: confirmed, checked: $('#confirm-check').checked });
+        resolve(confirmed);
       },
       { once: true },
     );
   });
 }
 
-function setRangeFill(range) {
-  const pct = ((range.value - range.min) / (range.max - range.min)) * 100;
-  range.style.setProperty('--fill', `${pct}%`);
+/** 1–8 connection picker. */
+function renderConnPicker(container, value, onChange) {
+  if (container.children.length !== 8) {
+    container.innerHTML = '';
+    for (let i = 1; i <= 8; i++) {
+      const b = document.createElement('button');
+      b.type = 'button';
+      b.textContent = i;
+      b.addEventListener('click', () => {
+        renderConnPicker(container, i, container._onChange);
+        container._onChange?.(i);
+      });
+      container.append(b);
+    }
+  }
+  container._onChange = onChange;
+  container.dataset.value = value;
+  [...container.children].forEach((b, i) => {
+    b.classList.toggle('on', i + 1 < value);
+    b.classList.toggle('current', i + 1 === value);
+  });
 }
 
-/* ---------- Download items ---------- */
+/* ---------- Actions ---------- */
 
-function createItem(d) {
-  const el = document.createElement('article');
-  el.className = 'item';
-  el.dataset.id = d.id;
-  el.innerHTML = `
-    <div class="item-row">
-      <div class="file-badge"></div>
-      <div class="item-body">
-        <div class="item-head">
-          <div class="item-name"></div>
-          <span class="pill"></span>
-          <span class="pill pill-browser" hidden>${icon('globe')} Browser</span>
-        </div>
-        <div class="segbar"></div>
-        <div class="item-meta">
-          <span class="meta-size"></span>
-          <span class="meta-pct"></span>
-          <span class="meta-speed">${icon('zap')}<b></b></span>
-          <span class="meta-eta">${icon('clock')}<b></b></span>
-          <span class="meta-conn">${icon('network')}<b></b></span>
-          <span class="meta-limit">${icon('gauge')}<b></b></span>
-          <span class="meta-error"></span>
-        </div>
-      </div>
-      <div class="item-actions">
-        <button class="icon-btn act-toggle"></button>
-        <button class="icon-btn act-folder" title="Show in folder">${icon('folder')}</button>
-        <button class="icon-btn act-more" title="More">${icon('more')}</button>
-      </div>
-    </div>
-    <div class="item-details" hidden></div>`;
-  el.refs = {
-    badge: $('.file-badge', el),
-    name: $('.item-name', el),
-    pill: $('.pill', el),
-    browser: $('.pill-browser', el),
-    bar: $('.segbar', el),
-    size: $('.meta-size', el),
-    pct: $('.meta-pct', el),
-    speed: $('.meta-speed', el),
-    eta: $('.meta-eta', el),
-    conn: $('.meta-conn', el),
-    limit: $('.meta-limit', el),
-    error: $('.meta-error', el),
-    toggle: $('.act-toggle', el),
-    details: $('.item-details', el),
-  };
+function selectedDownloads() {
+  return [...state.selected].map((id) => state.downloads.get(id)).filter(Boolean);
+}
 
-  $('.item-row', el).addEventListener('click', (e) => {
-    if (e.target.closest('button')) return;
-    toggleDetails(el.dataset.id);
-  });
-  $('.item-row', el).addEventListener('dblclick', (e) => {
-    if (e.target.closest('button')) return;
-    const cur = state.downloads.get(el.dataset.id);
-    if (cur?.status === 'completed') call('open_download', { id: cur.id });
-  });
-  el.refs.toggle.addEventListener('click', () => primaryAction(state.downloads.get(el.dataset.id)));
-  $('.act-folder', el).addEventListener('click', () => call('reveal_download', { id: el.dataset.id }));
-  $('.act-more', el).addEventListener('click', (e) => {
-    e.stopPropagation();
-    openMenu(e.currentTarget, menuEntries(state.downloads.get(el.dataset.id)));
-  });
-  state.elements.set(d.id, el);
-  return el;
+function canResume(d) {
+  return d.status === 'paused' || d.status === 'failed';
+}
+function canPause(d) {
+  return ACTIVE.has(d.status) || d.status === 'queued';
 }
 
 function primaryAction(d) {
   if (!d) return;
-  if (ACTIVE.has(d.status) || d.status === 'queued') call('pause_download', { id: d.id });
-  else if (d.status === 'paused' || d.status === 'failed') call('resume_download', { id: d.id });
+  if (canPause(d)) call('pause_download', { id: d.id });
+  else if (canResume(d)) call('resume_download', { id: d.id });
   else if (d.status === 'completed') call('open_download', { id: d.id });
 }
 
-function menuEntries(d) {
-  if (!d) return [];
-  const entries = [];
-  if (d.status === 'completed') entries.push({ icon: 'external', label: 'Open file', action: () => call('open_download', { id: d.id }) });
-  entries.push({ icon: 'folder', label: 'Show in folder', action: () => call('reveal_download', { id: d.id }) });
-  entries.push({ icon: 'copy', label: 'Copy link', action: () => copyText(d.url) });
-  if (d.status !== 'completed') {
-    entries.push({ icon: 'gauge', label: 'Set speed limit…', action: () => promptDownloadLimit(d) });
-  }
-  if (!ACTIVE.has(d.status)) {
-    entries.push({ icon: 'refresh', label: d.status === 'completed' ? 'Download again' : 'Restart from scratch', action: () => restart(d) });
-  }
-  entries.push('-');
-  entries.push({ icon: 'x', label: 'Remove from list', action: () => remove(d, false) });
-  entries.push({
-    icon: 'trash',
-    label: d.status === 'completed' ? 'Delete file' : 'Cancel & delete',
+async function deleteDownloads(list) {
+  if (!list.length) return;
+  const one = list.length === 1;
+  const anyFile = list.some((d) => d.status === 'completed');
+  const r = await ask({
+    title: one ? 'Delete download?' : `Delete ${list.length} downloads?`,
+    text: one ? `“${list[0].fileName}” will be removed from the list.` : 'The selected downloads will be removed from the list.',
+    ok: 'Delete',
     danger: true,
-    action: () => remove(d, true),
+    checkbox: { label: anyFile ? 'Also delete downloaded files from disk' : 'Also delete partial data', checked: !anyFile },
   });
-  return entries;
+  if (!r.ok) return;
+  for (const d of list) await call('remove_download', { id: d.id, deleteFile: r.checked });
 }
 
 async function copyText(text) {
@@ -302,23 +282,9 @@ async function copyText(text) {
   toast('Link copied to clipboard');
 }
 
-async function remove(d, deleteFile) {
-  if (deleteFile) {
-    const ok = await ask({
-      title: d.status === 'completed' ? 'Delete file?' : 'Cancel and delete?',
-      text: `“${d.fileName}” will be removed from the list and deleted from disk.`,
-      ok: 'Delete',
-      danger: true,
-    });
-    if (!ok) return;
-  }
-  await call('remove_download', { id: d.id, deleteFile });
-}
-
 async function restart(d) {
   if (d.downloaded > 0 && d.status !== 'completed') {
-    const ok = await ask({ title: 'Restart download?', text: 'Downloaded progress will be discarded.', ok: 'Restart' });
-    if (!ok) return;
+    if (!(await ask({ title: 'Restart download?', text: 'Downloaded progress will be discarded.', ok: 'Restart' }))) return;
   }
   await call('restart_download', { id: d.id });
 }
@@ -330,30 +296,310 @@ async function promptDownloadLimit(d) {
     ok: 'Apply',
     input: { value: d.speedLimit ? Math.round(d.speedLimit / 1024) : '', placeholder: 'Unlimited', suffix: 'KB/s' },
   });
-  if (kb == null) return;
-  await call('set_download_speed_limit', { id: d.id, limit: kb > 0 ? Math.round(kb * 1024) : null });
+  if (kb != null) await call('set_download_speed_limit', { id: d.id, limit: kb > 0 ? Math.round(kb * 1024) : null });
 }
 
-function renderSegments(bar, d) {
-  const done = d.status === 'completed';
-  bar.classList.toggle('done', done);
-  bar.classList.toggle('failed', d.status === 'failed');
-  bar.classList.toggle('paused', d.status === 'paused' || d.status === 'queued');
-  const unknown = !done && !d.totalSize && ACTIVE.has(d.status);
-  bar.classList.toggle('indeterminate', unknown);
+function menuEntries(d) {
+  const multi = state.selected.size > 1;
+  const list = multi ? selectedDownloads() : [d];
+  const entries = [];
+  if (!multi && d.status === 'completed') {
+    entries.push({ icon: 'external', label: 'Open', action: () => call('open_download', { id: d.id }) });
+  }
+  if (!multi) entries.push({ icon: 'folder', label: 'Open Folder', action: () => call('reveal_download', { id: d.id }) });
+  if (list.some(canResume)) entries.push({ icon: 'play', label: multi ? 'Resume Selected' : d.status === 'failed' ? 'Retry Download' : 'Resume Download', action: () => list.filter(canResume).forEach((x) => call('resume_download', { id: x.id })) });
+  if (list.some(canPause)) entries.push({ icon: 'pause', label: multi ? 'Pause Selected' : 'Pause Download', action: () => list.filter(canPause).forEach((x) => call('pause_download', { id: x.id })) });
+  if (!multi) {
+    entries.push('-');
+    entries.push({ icon: 'copy', label: 'Copy Address', action: () => copyText(d.url) });
+    if (d.status !== 'completed') entries.push({ icon: 'gauge', label: 'Speed Limit…', action: () => promptDownloadLimit(d) });
+    if (!ACTIVE.has(d.status)) entries.push({ icon: 'refresh', label: 'Redownload', action: () => restart(d) });
+    entries.push({ icon: 'panelRight', label: 'Properties', action: () => focusRow(d.id, true) });
+  }
+  entries.push('-');
+  entries.push({ icon: 'trash', label: multi ? `Delete ${list.length} Items` : 'Delete', danger: true, action: () => deleteDownloads(list) });
+  return entries;
+}
 
+/* ---------- Table rows ---------- */
+
+function createRow(d) {
+  const el = document.createElement('div');
+  el.className = 'row';
+  el.dataset.id = d.id;
+  el.setAttribute('role', 'row');
+  el.innerHTML = `
+    <span class="col-check"><button class="check" aria-label="Select"></button></span>
+    <div class="cell-name">
+      <div class="ftile"></div>
+      <div class="name-text"><strong></strong><span></span></div>
+    </div>
+    <div class="cell cell-size"></div>
+    <div class="cell-status">
+      <div class="status-line"></div>
+      <div class="bar"><i></i></div>
+    </div>
+    <div class="cell cell-speed col-speed"></div>
+    <div class="cell cell-eta col-eta"></div>
+    <div class="cell cell-added col-added"></div>`;
+  el.refs = {
+    check: $('.check', el),
+    tile: $('.ftile', el),
+    name: $('.name-text strong', el),
+    sub: $('.name-text span', el),
+    size: $('.cell-size', el),
+    status: $('.status-line', el),
+    bar: $('.bar', el),
+    fill: $('.bar > i', el),
+    speed: $('.cell-speed', el),
+    eta: $('.cell-eta', el),
+    added: $('.cell-added', el),
+  };
+  el.refs.check.addEventListener('click', (e) => {
+    e.stopPropagation();
+    toggleSelect(d.id);
+  });
+  el.addEventListener('mousedown', (e) => {
+    if (e.button !== 0 || e.target.closest('.check')) return;
+    clickRow(d.id, e);
+  });
+  el.addEventListener('dblclick', () => primaryAction(state.downloads.get(d.id)));
+  el.addEventListener('contextmenu', (e) => {
+    e.preventDefault();
+    if (!state.selected.has(d.id)) focusRow(d.id, false);
+    openMenu(menuEntries(state.downloads.get(d.id)), e.clientX, e.clientY);
+  });
+  state.rows.set(d.id, el);
+  return el;
+}
+
+function updateRow(el, d) {
+  const r = el.refs;
+  if (r.name.textContent !== d.fileName) {
+    r.name.textContent = d.fileName;
+    el.title = d.fileName;
+    setTile(r.tile, d.fileName);
+  }
+  r.sub.textContent = `${CATEGORIES[category(d.fileName)].label}${host(d.url) ? ` · ${host(d.url)}` : ''}${d.source === 'browser' ? ' · from browser' : ''}`;
+  r.size.textContent = d.totalSize != null ? fmtBytes(d.totalSize) : d.downloaded ? fmtBytes(d.downloaded) : '—';
+
+  const pct = Math.floor(progress(d) * 100);
+  const live = d.status === 'downloading';
+  let line;
+  switch (d.status) {
+    case 'completed':
+      line = `<span class="status-completed">${icon('checkCircle')}</span><span class="status-completed">Complete</span>`;
+      break;
+    case 'failed':
+      line = `<span class="status-failed">${icon('alert')}</span><span class="status-failed" title="${escapeHtml(d.error)}">Failed${d.totalSize ? ` · ${pct}%` : ''}</span>`;
+      break;
+    case 'paused':
+      line = `<span class="status-paused">Paused</span>${d.totalSize ? `<b>${pct}%</b>` : ''}`;
+      break;
+    case 'downloading':
+      line = `<span>Downloading</span>${d.totalSize ? `<b>${pct}%</b>` : `<b>${fmtBytes(d.downloaded)}</b>`}`;
+      break;
+    default:
+      line = `<span class="status-${d.status}">${STATUS_LABEL[d.status]}${d.status === 'merging' ? '…' : ''}</span>`;
+  }
+  if (r.status.innerHTML !== line) r.status.innerHTML = line;
+  r.bar.hidden = d.status === 'completed';
+  r.bar.className = `bar${d.status === 'paused' || d.status === 'queued' ? ' paused' : ''}${d.status === 'failed' ? ' failed' : ''}${live && !d.totalSize ? ' indeterminate' : ''}`;
+  r.fill.style.width = `${pct}%`;
+  el.classList.toggle('live', live);
+
+  r.speed.textContent = live ? fmtSpeed(d.speed) : '—';
+  r.speed.classList.toggle('live', live);
+  r.eta.textContent = d.status === 'completed' ? '0 sec' : live ? fmtEta(d.eta) : '—';
+  r.added.textContent = fmtDate(d.completedAt || d.createdAt);
+
+  const sel = state.selected.has(d.id);
+  el.classList.toggle('selected', sel);
+  r.check.classList.toggle('on', sel);
+  r.check.innerHTML = sel ? icon('check') : '';
+}
+
+/* ---------- Selection ---------- */
+
+function visibleDownloads() {
+  const f = FILTERS[state.filter].match;
+  const q = state.search.trim().toLowerCase();
+  const { key, dir } = state.sort;
+  const val = {
+    name: (d) => d.fileName.toLowerCase(),
+    size: (d) => d.totalSize ?? d.downloaded ?? 0,
+    status: (d) => `${Object.keys(STATUS_LABEL).indexOf(d.status)}${(1 - progress(d)).toFixed(4)}`,
+    speed: (d) => (d.status === 'downloading' ? d.speed : -1),
+    eta: (d) => (d.eta == null ? Infinity : d.eta),
+    added: (d) => d.createdAt,
+  }[key];
+  return [...state.downloads.values()]
+    .filter(f)
+    .filter((d) => !q || d.fileName.toLowerCase().includes(q) || d.url.toLowerCase().includes(q))
+    .sort((a, b) => {
+      const x = val(a);
+      const y = val(b);
+      return (x < y ? -1 : x > y ? 1 : b.createdAt - a.createdAt) * dir;
+    });
+}
+
+function clickRow(id, e) {
+  if (e.shiftKey && state.anchor) {
+    const ids = visibleDownloads().map((d) => d.id);
+    const [a, b] = [ids.indexOf(state.anchor), ids.indexOf(id)].sort((x, y) => x - y);
+    if (a >= 0 && b >= 0) {
+      if (!(e.ctrlKey || e.metaKey)) state.selected.clear();
+      ids.slice(a, b + 1).forEach((x) => state.selected.add(x));
+      state.focus = id;
+      return refreshSelection();
+    }
+  }
+  if (e.ctrlKey || e.metaKey) return toggleSelect(id);
+  focusRow(id, true);
+}
+
+function toggleSelect(id) {
+  if (state.selected.has(id)) state.selected.delete(id);
+  else state.selected.add(id);
+  state.anchor = id;
+  state.focus = state.selected.size ? (state.selected.has(id) ? id : [...state.selected].pop()) : null;
+  refreshSelection();
+}
+
+function focusRow(id, openDrawer) {
+  state.selected = new Set([id]);
+  state.anchor = id;
+  state.focus = id;
+  if (openDrawer) state.drawerOpen = true;
+  refreshSelection();
+}
+
+function clearSelection() {
+  state.selected.clear();
+  state.focus = null;
+  refreshSelection();
+}
+
+function refreshSelection() {
+  for (const [id, el] of state.rows) {
+    const d = state.downloads.get(id);
+    if (d && el.isConnected) updateRow(el, d);
+  }
+  updateToolbar();
+  renderDrawer();
+}
+
+function updateToolbar() {
+  const sel = selectedDownloads();
+  $('#tool-resume').disabled = !sel.some(canResume);
+  $('#tool-pause').disabled = !sel.some(canPause);
+  $('#tool-delete').disabled = sel.length === 0;
+  $('#tool-stop-all').disabled = ![...state.downloads.values()].some(canPause);
+  $('#tool-clear').disabled = ![...state.downloads.values()].some((d) => d.status === 'completed');
+
+  const visible = visibleDownloads();
+  const n = visible.filter((d) => state.selected.has(d.id)).length;
+  const all = $('#check-all');
+  all.className = `check${n && n === visible.length ? ' on' : n ? ' partial' : ''}`;
+  all.innerHTML = n && n === visible.length ? icon('check') : '';
+}
+
+/* ---------- Drawer ---------- */
+
+function renderDrawer() {
+  const d = state.drawerOpen && state.focus && state.selected.size === 1 ? state.downloads.get(state.focus) : null;
+  const drawer = $('#drawer');
+  drawer.hidden = !d;
+  if (!d) return;
+
+  if (drawer.dataset.id !== d.id) {
+    drawer.dataset.id = d.id;
+    setTile($('#d-tile'), d.fileName);
+    $('#d-conns').innerHTML = '';
+    $('#d-segmap').innerHTML = '';
+  }
+  $('#d-name').textContent = d.fileName;
+  $('#d-name').title = d.fileName;
+  $('#d-host').textContent = host(d.url) || '—';
+
+  const pct = progress(d);
+  $('#d-pct').textContent = `${Math.floor(pct * 100)}%`;
+  const tag = $('#d-status');
+  tag.textContent = STATUS_LABEL[d.status];
+  tag.className = `status-tag ${d.status}`;
+  renderSegmap($('#d-segmap'), d);
+  $('#d-progress-sub').textContent =
+    d.status === 'completed'
+      ? `Finished ${fmtDate(d.completedAt, true)}`
+      : `${fmtBytes(d.downloaded)} of ${d.totalSize != null ? fmtBytes(d.totalSize) : 'unknown size'}${d.activeConnections ? ` · ${d.activeConnections} active connection${d.activeConnections > 1 ? 's' : ''}` : ''}`;
+
+  $('#d-size').textContent = d.totalSize != null ? fmtBytes(d.totalSize) : 'Unknown';
+  $('#d-eta').textContent = d.status === 'completed' ? 'Done' : d.status === 'downloading' ? fmtEta(d.eta) : '—';
+  $('#d-speed').textContent = d.status === 'downloading' ? fmtSpeed(d.speed) : d.speedLimit ? `≤ ${fmtSpeed(d.speedLimit)}` : '0 B/s';
+
+  const toggle = $('#d-toggle');
+  const [ic, label] = canPause(d) ? ['pause', 'Pause'] : d.status === 'completed' ? ['external', 'Open file'] : ['play', d.status === 'failed' ? 'Retry' : 'Resume'];
+  if (toggle.dataset.kind !== ic) {
+    toggle.dataset.kind = ic;
+    toggle.innerHTML = `${icon(ic)}<span>${label}</span>`;
+  }
+
+  const done = d.status === 'completed';
+  const conn = $('#d-conn');
+  const shown = d.resumable || !d.totalSize ? d.connections : 1;
+  if (Number(conn.dataset.value) !== shown) renderConnPicker(conn, shown, (n) => call('set_download_connections', { id: state.focus, connections: n }));
+  conn.classList.toggle('disabled', done);
+  $('#d-conn-out').textContent = shown;
+  const limit = $('#d-limit');
+  if (document.activeElement !== limit) limit.value = d.speedLimit ? Math.round(d.speedLimit / 1024) : '';
+  limit.disabled = done;
+
+  const segs = d.segments || [];
+  $('#d-conns-section').hidden = done || segs.length === 0;
+  $('#d-conns-count').textContent = segs.length ? `${segs.filter((s) => s.active).length}/${segs.length}` : '';
+  const list = $('#d-conns');
+  while (list.children.length > segs.length) list.lastChild.remove();
+  segs.forEach((s, i) => {
+    let row = list.children[i];
+    if (!row) {
+      row = document.createElement('div');
+      row.className = 'conn-row';
+      row.innerHTML = '<span class="num"></span><div class="bar"><i></i></div><span class="pct"></span>';
+      list.append(row);
+    }
+    const p = s.len ? Math.min(1, s.downloaded / s.len) : s.len === 0 ? 1 : 0;
+    const finished = s.merged || (s.len != null && s.downloaded >= s.len);
+    row.className = `conn-row${s.active ? ' active' : ''}${finished ? ' done' : ''}`;
+    row.children[0].textContent = i + 1;
+    row.children[1].firstChild.style.width = `${p * 100}%`;
+    row.children[2].textContent = finished ? 'Done' : `${Math.floor(p * 100)}%`;
+    row.title = `${fmtBytes(s.start)} – ${s.len != null ? fmtBytes(s.start + s.len) : '?'}`;
+  });
+
+  $('#d-url').textContent = d.url;
+  $('#d-path').textContent = d.finalPath || d.saveDir;
+  $('#d-resume').textContent = d.totalSize == null && !d.segments.length ? '—' : d.resumable ? 'Yes — segmented' : 'No — single connection';
+  $('#d-added').textContent = fmtDate(d.createdAt, true);
+  const err = $('#d-error');
+  err.hidden = !d.error;
+  if (d.error) err.innerHTML = `${icon('alert')}<span>${escapeHtml(d.error)}</span>`;
+}
+
+function renderSegmap(map, d) {
+  const done = d.status === 'completed';
+  map.classList.toggle('done', done);
   const total = d.totalSize || 0;
-  const segs = done ? [{ start: 0, len: 1, downloaded: 1, merged: false, active: false }] : total ? d.segments : [];
-  const size = done ? 1 : total;
-  while (bar.children.length > segs.length) bar.lastChild.remove();
-  while (bar.children.length < segs.length) {
-    const seg = document.createElement('div');
-    seg.className = 'seg';
-    seg.innerHTML = '<div class="seg-fill"></div>';
-    bar.append(seg);
+  const segs = done || !total ? [{ start: 0, len: 1, downloaded: done ? 1 : 0, merged: false, active: false }] : d.segments;
+  const size = done || !total ? 1 : total;
+  while (map.children.length > segs.length) map.lastChild.remove();
+  while (map.children.length < segs.length) {
+    const s = document.createElement('div');
+    s.className = 'seg';
+    s.innerHTML = '<i></i>';
+    map.append(s);
   }
   segs.forEach((s, i) => {
-    const el = bar.children[i];
+    const el = map.children[i];
     const len = s.len ?? 0;
     el.style.left = `${(s.start / size) * 100}%`;
     el.style.width = `${(len / size) * 100}%`;
@@ -363,146 +609,7 @@ function renderSegments(bar, d) {
   });
 }
 
-function updateItem(el, d) {
-  const r = el.refs;
-  if (r.name.textContent !== d.fileName) {
-    r.name.textContent = d.fileName;
-    r.name.title = d.fileName;
-    setBadge(r.badge, d.fileName);
-  }
-  r.pill.className = `pill pill-${d.status}`;
-  r.pill.textContent = STATUS_LABEL[d.status] || d.status;
-  r.browser.hidden = d.source !== 'browser';
-
-  renderSegments(r.bar, d);
-
-  const total = d.totalSize;
-  const running = d.status === 'downloading';
-  r.size.textContent = d.status === 'completed' ? fmtBytes(total ?? d.downloaded) : total != null ? `${fmtBytes(d.downloaded)} of ${fmtBytes(total)}` : fmtBytes(d.downloaded);
-  r.pct.hidden = !total || d.status === 'completed';
-  r.pct.textContent = total ? `${Math.floor((d.downloaded / total) * 100)}%` : '';
-  r.speed.hidden = !running;
-  r.speed.lastChild.textContent = fmtSpeed(d.speed);
-  r.eta.hidden = !running || d.eta == null;
-  r.eta.lastChild.textContent = `${fmtEta(d.eta)} left`;
-  r.conn.hidden = !(running || d.status === 'connecting');
-  r.conn.lastChild.textContent = `${d.activeConnections}/${d.resumable ? d.connections : 1}`;
-  r.limit.hidden = !d.speedLimit || d.status === 'completed';
-  r.limit.lastChild.textContent = fmtSpeed(d.speedLimit);
-  r.error.hidden = d.status !== 'failed';
-  r.error.textContent = d.error || '';
-  if (d.status === 'completed') r.size.textContent += ` · ${fmtDate(d.completedAt)}`;
-  else if (d.downloaded === 0 && d.status === 'queued') r.size.textContent = 'Waiting for a free slot…';
-  else if (d.downloaded === 0 && d.status === 'connecting') r.size.textContent = 'Connecting…';
-
-  const toggle = ACTIVE.has(d.status) || d.status === 'queued' ? ['pause', 'Pause'] : d.status === 'completed' ? ['external', 'Open'] : ['play', d.status === 'failed' ? 'Retry' : 'Resume'];
-  if (r.toggle.dataset.kind !== toggle[0]) {
-    r.toggle.dataset.kind = toggle[0];
-    r.toggle.innerHTML = icon(toggle[0]);
-  }
-  r.toggle.title = toggle[1];
-
-  el.classList.toggle('expanded', state.expanded.has(d.id));
-  r.details.hidden = !state.expanded.has(d.id);
-  if (state.expanded.has(d.id)) renderDetails(el, d);
-}
-
-function toggleDetails(id) {
-  if (state.expanded.has(id)) state.expanded.delete(id);
-  else state.expanded.add(id);
-  const el = state.elements.get(id);
-  if (el) {
-    el.refs.details.innerHTML = '';
-    updateItem(el, state.downloads.get(id));
-  }
-}
-
-function renderDetails(el, d) {
-  const box = el.refs.details;
-  if (!box.firstChild) {
-    box.innerHTML = `
-      <dl class="details-info">
-        <dt>Address</dt><dd class="mono d-url"></dd>
-        <dt>Saved to</dt><dd class="d-path"></dd>
-        <dt>Size</dt><dd class="d-size"></dd>
-        <dt>Resume</dt><dd class="d-resume"></dd>
-        <dt>Added</dt><dd class="d-added"></dd>
-      </dl>
-      <div class="details-controls">
-        <div class="field">
-          <label>Connections <output class="pill-count d-conn-out"></output></label>
-          <input type="range" min="1" max="8" class="d-conn" />
-        </div>
-        <div class="field">
-          <label>Speed limit</label>
-          <div class="input-suffix"><input type="number" min="0" placeholder="Unlimited" class="d-limit" /><span>KB/s</span></div>
-        </div>
-      </div>
-      <div class="details-error" hidden></div>
-      <div class="details-segments">
-        <table class="seg-table">
-          <thead><tr><th>#</th><th>Range</th><th>Downloaded</th><th style="width:40%">Progress</th><th>State</th></tr></thead>
-          <tbody></tbody>
-        </table>
-      </div>`;
-    const conn = $('.d-conn', box);
-    conn.addEventListener('input', () => {
-      $('.d-conn-out', box).textContent = conn.value;
-      setRangeFill(conn);
-    });
-    conn.addEventListener('change', () => call('set_download_connections', { id: d.id, connections: Number(conn.value) }));
-    const limit = $('.d-limit', box);
-    limit.addEventListener('change', () => {
-      const kb = Number(limit.value || 0);
-      call('set_download_speed_limit', { id: d.id, limit: kb > 0 ? Math.round(kb * 1024) : null });
-    });
-  }
-
-  $('.d-url', box).textContent = d.url;
-  $('.d-path', box).textContent = d.finalPath || d.saveDir;
-  $('.d-size', box).textContent = d.totalSize != null ? `${fmtBytes(d.totalSize)} (${d.totalSize.toLocaleString()} bytes)` : 'Unknown';
-  $('.d-resume', box).textContent = d.totalSize == null && d.status === 'queued' ? '—' : d.resumable ? 'Supported — segmented download' : 'Not supported — single connection';
-  $('.d-added', box).textContent = fmtDate(d.createdAt);
-
-  const conn = $('.d-conn', box);
-  if (document.activeElement !== conn) {
-    conn.value = d.connections;
-    $('.d-conn-out', box).textContent = d.connections;
-    setRangeFill(conn);
-  }
-  conn.disabled = d.status === 'completed';
-  const limit = $('.d-limit', box);
-  if (document.activeElement !== limit) limit.value = d.speedLimit ? Math.round(d.speedLimit / 1024) : '';
-  limit.disabled = d.status === 'completed';
-
-  const err = $('.details-error', box);
-  err.hidden = !d.error;
-  if (d.error) err.innerHTML = `${icon('alert')}<span>${escapeHtml(d.error)}</span>`;
-
-  const tbody = $('tbody', box);
-  $('.details-segments', box).hidden = d.segments.length === 0 || d.status === 'completed';
-  const rows = d.segments
-    .map((s, i) => {
-      const end = s.len != null ? s.start + s.len - 1 : null;
-      const pct = s.len ? Math.min(100, (s.downloaded / s.len) * 100) : s.len === 0 ? 100 : 0;
-      const st = s.merged ? ['merged', 'Merged'] : s.active ? ['active', 'Receiving'] : s.len != null && s.downloaded >= s.len ? ['merged', 'Done'] : ['', 'Waiting'];
-      return `<tr><td>${i + 1}</td><td>${fmtBytes(s.start)} – ${end != null ? fmtBytes(end) : '?'}</td><td>${fmtBytes(s.downloaded)}</td>
-        <td><div class="mini-bar"><div style="width:${pct}%"></div></div></td><td><span class="seg-state ${st[0]}">${st[1]}</span></td></tr>`;
-    })
-    .join('');
-  if (tbody.innerHTML !== rows) tbody.innerHTML = rows;
-}
-
-/* ---------- List & stats ---------- */
-
-function visibleDownloads() {
-  const f = FILTERS[state.filter].match;
-  const q = state.search.trim().toLowerCase();
-  return [...state.downloads.values()]
-    .filter(f)
-    .filter((d) => !q || d.fileName.toLowerCase().includes(q) || d.url.toLowerCase().includes(q))
-    .sort((a, b) => b.createdAt - a.createdAt);
-}
+/* ---------- List rendering ---------- */
 
 function renderList() {
   const list = $('#list');
@@ -510,52 +617,47 @@ function renderList() {
   const keep = new Set(items.map((d) => d.id));
   for (const el of [...list.children]) if (!keep.has(el.dataset.id)) el.remove();
   items.forEach((d, i) => {
-    const el = state.elements.get(d.id) || createItem(d);
-    updateItem(el, d);
+    const el = state.rows.get(d.id) || createRow(d);
+    updateRow(el, d);
     if (list.children[i] !== el) list.insertBefore(el, list.children[i] || null);
   });
 
   const all = [...state.downloads.values()];
   for (const key of Object.keys(FILTERS)) {
-    const n = all.filter(FILTERS[key].match).length;
     const badge = $(`[data-count="${key}"]`);
-    if (badge) badge.textContent = n;
+    if (badge) {
+      const n = all.filter(FILTERS[key].match).length;
+      badge.textContent = n || '';
+    }
   }
   $('#view-title').textContent = FILTERS[state.filter].title;
-  $('#view-subtitle').textContent = `${items.length} ${items.length === 1 ? 'item' : 'items'}${state.search ? ` matching “${state.search}”` : ''}`;
+  $('#view-count').textContent = items.length;
 
   const empty = items.length === 0;
   $('#empty').hidden = !empty;
   list.hidden = empty;
   if (empty) {
-    const searching = state.search || state.filter !== 'all';
-    $('#empty-title').textContent = searching ? 'Nothing here' : 'No downloads yet';
-    $('#empty-text').hidden = !!searching;
-    $('#btn-empty-add').hidden = !!searching;
+    const filtered = state.search || state.filter !== 'all';
+    $('#empty-title').textContent = filtered ? 'Nothing to show here' : 'No downloads yet';
+    $('#empty-text').hidden = !!filtered;
   }
-  renderStats();
+  $$('.th').forEach((th) => th.classList.toggle('sorted', th.dataset.sort === state.sort.key));
+  updateToolbar();
+  renderDrawer();
+  renderStatusbar();
 }
 
-function renderStats() {
+function renderStatusbar() {
   const all = [...state.downloads.values()];
   const active = all.filter((d) => ACTIVE.has(d.status));
-  const speed = active.reduce((s, d) => s + (d.speed || 0), 0);
-  $('#stat-speed').textContent = fmtSpeed(speed);
-  $('#stat-active').textContent = active.length;
-  const slots = state.settings?.maxConcurrent ?? 3;
   const queued = all.filter((d) => d.status === 'queued').length;
-  $('#stat-active-hint').textContent = `of ${slots} slots${queued ? ` · ${queued} queued` : ''}`;
-
-  const pending = all.filter((d) => d.status !== 'completed' && d.totalSize != null);
-  const remaining = pending.reduce((s, d) => s + Math.max(0, d.totalSize - d.downloaded), 0);
-  $('#stat-remaining').textContent = pending.length ? fmtBytes(remaining) : '—';
-  const eta = speed > 0 ? Math.round(active.reduce((s, d) => s + Math.max(0, (d.totalSize || 0) - d.downloaded), 0) / speed) : null;
-  $('#stat-remaining-hint').textContent = pending.length ? (eta != null ? `about ${fmtEta(eta)} at current speed` : `in ${pending.length} download${pending.length > 1 ? 's' : ''}`) : 'nothing pending';
-
-  const completed = all.filter((d) => d.status === 'completed');
-  $('#stat-completed').textContent = completed.length;
-  $('#stat-completed-hint').textContent = `${fmtBytes(completed.reduce((s, d) => s + (d.totalSize || 0), 0))} total`;
-  $('#stat-limit-hint').textContent = state.settings?.globalSpeedLimit ? `Limited to ${fmtSpeed(state.settings.globalSpeedLimit)}` : 'No limit';
+  const speed = active.reduce((s, d) => s + (d.speed || 0), 0);
+  $('#sb-speed').textContent = fmtSpeed(speed);
+  $('#sb-active').textContent = active.length
+    ? `${active.length} active${queued ? ` · ${queued} queued` : ''} of ${state.settings?.maxConcurrent ?? 3} slots`
+    : queued
+      ? `${queued} queued`
+      : 'Idle';
   return speed;
 }
 
@@ -575,19 +677,16 @@ function drawSparkline() {
   const data = state.speedHistory;
   const max = Math.max(...data, 1);
   const step = w / (data.length - 1);
-  const y = (v) => h - 3 - (v / max) * (h - 8);
-
+  const y = (v) => h - 2 - (v / max) * (h - 6);
   ctx.beginPath();
   ctx.moveTo(0, y(data[0]));
   for (let i = 1; i < data.length; i++) {
-    const x0 = (i - 1) * step;
-    const x1 = i * step;
-    const xm = (x0 + x1) / 2;
-    ctx.bezierCurveTo(xm, y(data[i - 1]), xm, y(data[i]), x1, y(data[i]));
+    const xm = (i - 0.5) * step;
+    ctx.bezierCurveTo(xm, y(data[i - 1]), xm, y(data[i]), i * step, y(data[i]));
   }
   const stroke = ctx.createLinearGradient(0, 0, w, 0);
-  stroke.addColorStop(0, '#4f6bff');
-  stroke.addColorStop(1, '#8b5cf6');
+  stroke.addColorStop(0, '#2dd4bf');
+  stroke.addColorStop(1, '#a855f7');
   ctx.strokeStyle = stroke;
   ctx.lineWidth = 2;
   ctx.stroke();
@@ -595,13 +694,32 @@ function drawSparkline() {
   ctx.lineTo(0, h);
   ctx.closePath();
   const fill = ctx.createLinearGradient(0, 0, 0, h);
-  fill.addColorStop(0, 'rgba(110, 110, 255, 0.28)');
-  fill.addColorStop(1, 'rgba(110, 110, 255, 0)');
+  fill.addColorStop(0, 'rgba(139, 92, 246, 0.3)');
+  fill.addColorStop(1, 'rgba(139, 92, 246, 0)');
   ctx.fillStyle = fill;
   ctx.fill();
 }
 
-/* ---------- Event handling ---------- */
+/* ---------- Disk ---------- */
+
+async function refreshDisk() {
+  const dir = state.settings?.downloadDir;
+  if (!dir) return;
+  const parts = dir.split(/[\\/]/).filter(Boolean);
+  $('#disk-path').textContent = parts.length > 2 ? `…/${parts.slice(-2).join('/')}` : dir;
+  $('#disk-path').title = dir;
+  try {
+    const { total, free } = await invoke('disk_space', { path: dir });
+    const used = total ? (total - free) / total : 0;
+    $('#disk-pct').textContent = `${Math.round(used * 100)}%`;
+    $('#gauge-fill').style.strokeDasharray = `${used * 100} 100`;
+    $('#disk-free').textContent = `${fmtBytes(free)} free of ${fmtBytes(total)}`;
+  } catch {
+    $('#disk-free').textContent = 'Unavailable';
+  }
+}
+
+/* ---------- Events ---------- */
 
 function upsert(d) {
   const prev = state.downloads.get(d.id);
@@ -614,39 +732,39 @@ function onProgress(views) {
   for (const d of views) {
     if (upsert(d)) structural = true;
     else {
-      const el = state.elements.get(d.id);
-      if (el && el.isConnected) updateItem(el, d);
+      const el = state.rows.get(d.id);
+      if (el?.isConnected) updateRow(el, d);
     }
   }
-  if (structural) renderList();
-  else renderStats();
+  if (structural || ['speed', 'eta', 'status'].includes(state.sort.key)) renderList();
+  else {
+    if (views.some((d) => d.id === state.focus)) renderDrawer();
+    renderStatusbar();
+  }
 }
 
-/* ---------- Theme ---------- */
+/* ---------- Theme & global limit ---------- */
 
 function effectiveTheme() {
-  const t = state.settings?.theme || 'system';
+  const t = state.settings?.theme || 'dark';
   if (t !== 'system') return t;
-  return matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
+  return matchMedia('(prefers-color-scheme: light)').matches ? 'light' : 'dark';
 }
 
 function applyTheme() {
-  const t = state.settings?.theme || 'system';
-  if (t === 'system') document.documentElement.removeAttribute('data-theme');
-  else document.documentElement.dataset.theme = t;
-  $('#btn-theme').innerHTML = icon(effectiveTheme() === 'dark' ? 'sun' : 'moon');
+  document.documentElement.dataset.theme = state.settings?.theme || 'dark';
+  const btn = $('#tool-theme');
+  btn.innerHTML = `${icon(effectiveTheme() === 'dark' ? 'sun' : 'moon')}<span>${effectiveTheme() === 'dark' ? 'Light' : 'Dark'}</span>`;
 }
 
 async function saveSettings(patch) {
-  const next = { ...state.settings, ...patch };
-  state.settings = await call('save_settings', { settings: next });
+  state.settings = await call('save_settings', { settings: { ...state.settings, ...patch } });
   applyTheme();
   renderGlobalLimit();
-  renderStats();
+  renderStatusbar();
+  refreshDisk();
   return state.settings;
 }
-
-/* ---------- Global speed limit ---------- */
 
 function renderGlobalLimit() {
   const select = $('#global-limit');
@@ -662,7 +780,7 @@ function renderGlobalLimit() {
 
 async function onGlobalLimitChange() {
   const select = $('#global-limit');
-  let bytes;
+  let bytes = Number(select.value);
   if (select.value === 'custom') {
     const kb = await ask({
       title: 'Global speed limit',
@@ -672,67 +790,50 @@ async function onGlobalLimitChange() {
     });
     if (kb == null) return renderGlobalLimit();
     bytes = kb > 0 ? Math.round(kb * 1024) : 0;
-  } else {
-    bytes = Number(select.value);
   }
   await call('set_global_speed_limit', { limit: bytes || null });
   state.settings.globalSpeedLimit = bytes || null;
   renderGlobalLimit();
-  renderStats();
   toast(bytes ? `Speed limited to ${fmtSpeed(bytes)}` : 'Speed limit removed');
 }
 
-/* ---------- Browser bridge ---------- */
-
 function renderBridge() {
   const b = state.bridge;
-  const dot = $('#bridge-dot');
-  const sub = $('#bridge-sub');
   if (!b) return;
+  const dot = $('#bridge-dot');
+  const text = $('#bridge-text');
   if (b.error) {
     dot.className = 'dot err';
-    sub.textContent = 'Port unavailable';
+    text.textContent = 'Browser: port busy';
   } else if (!b.listening) {
     dot.className = 'dot';
-    sub.textContent = 'Starting…';
+    text.textContent = 'Browser: starting';
   } else if (b.clients > 0) {
     dot.className = 'dot ok';
-    sub.textContent = `Connected · ${b.clients} browser${b.clients > 1 ? 's' : ''}`;
+    text.textContent = `Browser connected${b.clients > 1 ? ` (${b.clients})` : ''}`;
   } else {
     dot.className = 'dot idle';
-    sub.textContent = `Waiting for extension · :${b.port}`;
+    text.textContent = 'Browser not connected';
   }
   const status = $('#set-bridge-status');
-  if (status) {
-    status.innerHTML = `<span class="${dot.className}"></span><span>${escapeHtml(
-      b.error ? b.error : b.listening ? `Listening on ws://127.0.0.1:${b.port} — ${b.clients} extension connection${b.clients === 1 ? '' : 's'}` : 'Starting…',
-    )}</span>`;
-  }
+  status.innerHTML = `<span class="${dot.className}"></span><span>${escapeHtml(
+    b.error || (b.listening ? `Listening on ws://127.0.0.1:${b.port} — ${b.clients} extension connection${b.clients === 1 ? '' : 's'}` : 'Starting…'),
+  )}</span>`;
 }
 
 /* ---------- Add dialog ---------- */
 
-const addState = { headers: [], nameEdited: false, probeSeq: 0, probeTimer: null, probed: null, source: null };
-
-function renderConnViz(container, n) {
-  if (container.children.length !== 8) container.innerHTML = '<span></span>'.repeat(8);
-  [...container.children].forEach((s, i) => s.classList.toggle('on', i < n));
-}
+const addState = { headers: [], nameEdited: false, probeSeq: 0, probeTimer: null, source: null };
 
 function openAddDialog({ url = '', fileName = '', headers = [], fileSize = null, source = null } = {}) {
   const dlg = $('#dlg-add');
-  addState.headers = headers;
-  addState.nameEdited = !!fileName;
-  addState.probed = null;
-  addState.source = source;
+  Object.assign(addState, { headers, nameEdited: !!fileName, source });
   $('#add-url').value = url;
   $('#add-name').value = fileName || '';
   $('#add-dir').value = state.settings?.downloadDir || '';
-  const conn = $('#add-conn');
-  conn.value = state.settings?.defaultConnections ?? 8;
-  $('#add-conn-out').textContent = conn.value;
-  setRangeFill(conn);
-  renderConnViz($('#add-conn-viz'), Number(conn.value));
+  const conns = state.settings?.defaultConnections ?? 8;
+  renderConnPicker($('#add-conn'), conns, (n) => ($('#add-conn-out').textContent = n));
+  $('#add-conn-out').textContent = conns;
   $('#add-limit').value = '';
   $('#add-start').checked = true;
   $('#add-source').textContent = source === 'browser' ? 'Captured from your browser' : 'Enter a link to download';
@@ -750,13 +851,13 @@ function setProbe(kind, info) {
   if (kind === 'loading') {
     $('#probe-title').textContent = 'Checking link…';
     meta.innerHTML = '';
-    setBadge($('#probe-badge'), '');
+    setTile($('#probe-tile'), '');
   } else if (kind === 'error') {
     $('#probe-title').textContent = info;
     meta.innerHTML = '<span>You can still try to download it.</span>';
   } else if (kind === 'ok') {
     $('#probe-title').textContent = info.fileName;
-    setBadge($('#probe-badge'), info.fileName);
+    setTile($('#probe-tile'), info.fileName);
     const tags = [`<span class="tag">${info.totalSize != null ? fmtBytes(info.totalSize) : 'Unknown size'}</span>`];
     if (info.resumable === true) tags.push('<span class="tag ok">Resumable · up to 8 connections</span>');
     if (info.resumable === false) tags.push('<span class="tag warn">No resume · single connection</span>');
@@ -772,38 +873,32 @@ function scheduleProbe(delay = 450) {
 
 async function runProbe() {
   const url = $('#add-url').value.trim();
-  if (!/^https?:\/\/\S+/i.test(url)) {
-    setProbe('idle');
-    return;
-  }
+  if (!isUrl(url)) return setProbe('idle');
   const seq = ++addState.probeSeq;
   setProbe('loading');
   try {
     const info = await invoke('probe_url', { url, headers: addState.headers });
     if (seq !== addState.probeSeq) return;
-    addState.probed = info;
     if (!addState.nameEdited) $('#add-name').value = info.fileName;
     setProbe('ok', info);
   } catch (e) {
-    if (seq !== addState.probeSeq) return;
-    setProbe('error', String(e));
+    if (seq === addState.probeSeq) setProbe('error', String(e));
   }
 }
 
 async function submitAdd(e) {
   e.preventDefault();
   const url = $('#add-url').value.trim();
-  if (!/^https?:\/\/\S+/i.test(url)) {
+  if (!isUrl(url)) {
     toast('Please enter a valid http(s) link', 'error');
-    $('#add-url').focus();
-    return;
+    return $('#add-url').focus();
   }
   const kb = Number($('#add-limit').value || 0);
   const request = {
     url,
     fileName: $('#add-name').value.trim() || null,
     saveDir: $('#add-dir').value.trim() || null,
-    connections: Number($('#add-conn').value),
+    connections: Number($('#add-conn').dataset.value),
     speedLimit: kb > 0 ? Math.round(kb * 1024) : null,
     headers: addState.headers,
     start: $('#add-start').checked,
@@ -814,8 +909,11 @@ async function submitAdd(e) {
   try {
     const d = await call('add_download', { request });
     $('#dlg-add').close('ok');
-    toast(`Added “${d.fileName}”`, 'success');
-    if (state.filter !== 'all' && !FILTERS[state.filter].match(d)) selectFilter('all');
+    $('#quick-url').value = '';
+    if (!FILTERS[state.filter].match(d)) selectFilter('all');
+    upsert(d);
+    renderList();
+    focusRow(d.id, true);
   } finally {
     btn.disabled = false;
   }
@@ -826,10 +924,8 @@ async function submitAdd(e) {
 function openSettings() {
   const s = state.settings;
   $('#set-dir').value = s.downloadDir;
-  const conn = $('#set-conn');
-  conn.value = s.defaultConnections;
-  $('#set-conn-out').textContent = conn.value;
-  setRangeFill(conn);
+  renderConnPicker($('#set-conn'), s.defaultConnections, (n) => ($('#set-conn-out').textContent = n));
+  $('#set-conn-out').textContent = s.defaultConnections;
   $('#set-concurrent').value = s.maxConcurrent;
   $('#set-limit').value = s.globalSpeedLimit ? Math.round(s.globalSpeedLimit / 1024) : '';
   $('#set-port').value = s.bridgePort;
@@ -849,23 +945,20 @@ async function submitSettings(e) {
   e.preventDefault();
   const kb = Number($('#set-limit').value || 0);
   const port = Number($('#set-port').value || 0);
-  if (port < 1024 || port > 65535) {
-    toast('Port must be between 1024 and 65535', 'error');
-    return;
-  }
+  if (port < 1024 || port > 65535) return toast('Port must be between 1024 and 65535', 'error');
   await saveSettings({
     downloadDir: $('#set-dir').value.trim() || state.settings.downloadDir,
-    defaultConnections: Number($('#set-conn').value),
+    defaultConnections: Number($('#set-conn').dataset.value),
     maxConcurrent: Math.max(1, Math.min(16, Number($('#set-concurrent').value || 3))),
     globalSpeedLimit: kb > 0 ? Math.round(kb * 1024) : null,
     bridgePort: port,
     autoStartBrowser: $('#set-autostart').checked,
     closeToTray: $('#set-tray').checked,
     notifyOnComplete: $('#set-notify').checked,
-    theme: $('#set-theme button.active')?.dataset.value || 'system',
+    theme: $('#set-theme button.active')?.dataset.value || 'dark',
   });
   $('#dlg-settings').close('ok');
-  toast('Settings saved', 'success');
+  toast('Options saved', 'success');
 }
 
 /* ---------- Wiring ---------- */
@@ -880,20 +973,65 @@ function bindUi() {
   hydrateIcons();
   $$('.dialog').forEach(setupDialog);
 
-  $('#btn-add').addEventListener('click', () => openAddDialog());
-  $('#btn-empty-add').addEventListener('click', () => openAddDialog());
   $$('.nav-item').forEach((b) => b.addEventListener('click', () => selectFilter(b.dataset.filter)));
   $('#search').addEventListener('input', (e) => {
     state.search = e.target.value;
     renderList();
   });
-  $('#btn-resume-all').addEventListener('click', () => call('resume_all'));
-  $('#btn-pause-all').addEventListener('click', () => call('pause_all'));
-  $('#btn-clear').addEventListener('click', () => call('clear_completed'));
-  $('#btn-settings').addEventListener('click', openSettings);
-  $('#bridge-card').addEventListener('click', openSettings);
-  $('#btn-theme').addEventListener('click', () => saveSettings({ theme: effectiveTheme() === 'dark' ? 'light' : 'dark' }));
+  $$('.th').forEach((th) =>
+    th.addEventListener('click', () => {
+      const key = th.dataset.sort;
+      state.sort = { key, dir: state.sort.key === key ? -state.sort.dir : key === 'name' ? 1 : -1 };
+      renderList();
+    }),
+  );
+  $('#check-all').addEventListener('click', () => {
+    const visible = visibleDownloads();
+    const allOn = visible.length && visible.every((d) => state.selected.has(d.id));
+    state.selected = allOn ? new Set() : new Set(visible.map((d) => d.id));
+    state.focus = allOn ? null : state.focus;
+    refreshSelection();
+  });
+  $('#list').addEventListener('mousedown', (e) => {
+    if (e.target === $('#list')) clearSelection();
+  });
+
+  // Toolbar
+  $('#quick-add').addEventListener('submit', (e) => {
+    e.preventDefault();
+    const url = $('#quick-url').value.trim();
+    if (url && !isUrl(url)) return toast('That does not look like an http(s) link', 'error');
+    openAddDialog({ url });
+  });
+  $('#tool-resume').addEventListener('click', () => selectedDownloads().filter(canResume).forEach((d) => call('resume_download', { id: d.id })));
+  $('#tool-pause').addEventListener('click', () => selectedDownloads().filter(canPause).forEach((d) => call('pause_download', { id: d.id })));
+  $('#tool-stop-all').addEventListener('click', () => call('pause_all'));
+  $('#tool-delete').addEventListener('click', () => deleteDownloads(selectedDownloads()));
+  $('#tool-clear').addEventListener('click', () => call('clear_completed'));
+  $('#tool-settings').addEventListener('click', openSettings);
+  $('#tool-theme').addEventListener('click', () => saveSettings({ theme: effectiveTheme() === 'dark' ? 'light' : 'dark' }));
+
+  // Drawer
+  $('#d-close').addEventListener('click', () => {
+    state.drawerOpen = false;
+    renderDrawer();
+  });
+  $('#d-toggle').addEventListener('click', () => primaryAction(state.downloads.get(state.focus)));
+  $('#d-folder').addEventListener('click', () => call('reveal_download', { id: state.focus }));
+  $('#d-more').addEventListener('click', (e) => {
+    e.stopPropagation();
+    const r = e.currentTarget.getBoundingClientRect();
+    openMenu(menuEntries(state.downloads.get(state.focus)), r.right - 220, r.bottom + 6);
+  });
+  $('#d-limit').addEventListener('change', (e) => {
+    const kb = Number(e.target.value || 0);
+    call('set_download_speed_limit', { id: state.focus, limit: kb > 0 ? Math.round(kb * 1024) : null });
+  });
+
+  // Status bar & sidebar
   $('#global-limit').addEventListener('change', onGlobalLimitChange);
+  $('#sb-bridge').addEventListener('click', openSettings);
+  $('#disk-card').addEventListener('click', () => state.settings && call('open_folder', { path: state.settings.downloadDir }));
 
   // Add dialog
   $('#add-form').addEventListener('submit', submitAdd);
@@ -902,11 +1040,6 @@ function bindUi() {
     scheduleProbe();
   });
   $('#add-name').addEventListener('input', () => (addState.nameEdited = $('#add-name').value.trim() !== ''));
-  $('#add-conn').addEventListener('input', (e) => {
-    $('#add-conn-out').textContent = e.target.value;
-    setRangeFill(e.target);
-    renderConnViz($('#add-conn-viz'), Number(e.target.value));
-  });
   $('#add-browse').addEventListener('click', async () => {
     const dir = await call('pick_folder', { current: $('#add-dir').value });
     if (dir) $('#add-dir').value = dir;
@@ -914,10 +1047,6 @@ function bindUi() {
 
   // Settings dialog
   $('#settings-form').addEventListener('submit', submitSettings);
-  $('#set-conn').addEventListener('input', (e) => {
-    $('#set-conn-out').textContent = e.target.value;
-    setRangeFill(e.target);
-  });
   $('#set-browse').addEventListener('click', async () => {
     const dir = await call('pick_folder', { current: $('#set-dir').value });
     if (dir) $('#set-dir').value = dir;
@@ -932,31 +1061,58 @@ function bindUi() {
     }),
   );
 
-  // Global shortcuts
-  document.addEventListener('click', (e) => {
+  // Global
+  document.addEventListener('mousedown', (e) => {
     if (!e.target.closest('#menu')) closeMenu();
   });
   window.addEventListener('blur', closeMenu);
   window.addEventListener('resize', closeMenu);
   $('#list').addEventListener('scroll', closeMenu, { passive: true });
-  document.addEventListener('keydown', (e) => {
-    if (e.key === 'Escape') closeMenu();
-    if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'n') {
-      e.preventDefault();
-      openAddDialog();
-    }
-    if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'f') {
-      e.preventDefault();
-      $('#search').focus();
-    }
-  });
-  // Pasting a link anywhere opens the new download dialog.
+  document.addEventListener('keydown', onKey);
   document.addEventListener('paste', (e) => {
     if (e.target.closest('input, textarea') || $('dialog[open]')) return;
     const text = e.clipboardData?.getData('text')?.trim();
-    if (text && /^https?:\/\/\S+$/i.test(text)) openAddDialog({ url: text });
+    if (isUrl(text)) openAddDialog({ url: text });
   });
-  matchMedia('(prefers-color-scheme: dark)').addEventListener('change', applyTheme);
+  matchMedia('(prefers-color-scheme: light)').addEventListener('change', applyTheme);
+}
+
+function onKey(e) {
+  const mod = e.ctrlKey || e.metaKey;
+  const typing = e.target.closest('input, textarea, select') || $('dialog[open]');
+  if (e.key === 'Escape') {
+    if (!$('#menu').hidden) return closeMenu();
+    if (!typing) clearSelection();
+  }
+  if (mod && e.key.toLowerCase() === 'n') {
+    e.preventDefault();
+    return openAddDialog();
+  }
+  if (mod && e.key.toLowerCase() === 'f') {
+    e.preventDefault();
+    return $('#search').focus();
+  }
+  if (typing) return;
+  if (mod && e.key.toLowerCase() === 'a') {
+    e.preventDefault();
+    state.selected = new Set(visibleDownloads().map((d) => d.id));
+    return refreshSelection();
+  }
+  if (e.key === 'Delete') deleteDownloads(selectedDownloads());
+  if (e.key === 'Enter' && state.focus) primaryAction(state.downloads.get(state.focus));
+  if (e.key === ' ' && state.selected.size) {
+    e.preventDefault();
+    selectedDownloads().forEach((d) => primaryAction(d.status === 'completed' ? null : d));
+  }
+  if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
+    e.preventDefault();
+    const ids = visibleDownloads().map((d) => d.id);
+    if (!ids.length) return;
+    const i = ids.indexOf(state.focus);
+    const next = ids[Math.max(0, Math.min(ids.length - 1, i < 0 ? 0 : i + (e.key === 'ArrowDown' ? 1 : -1)))];
+    focusRow(next, state.drawerOpen);
+    state.rows.get(next)?.scrollIntoView({ block: 'nearest' });
+  }
 }
 
 async function init() {
@@ -967,14 +1123,14 @@ async function init() {
     invoke('bridge_status'),
     invoke('app_info'),
   ]);
-  state.settings = settings;
-  state.bridge = bridge;
-  state.appInfo = appInfo;
+  Object.assign(state, { settings, bridge, appInfo });
+  $('#app-version').textContent = appInfo.version;
   downloads.forEach(upsert);
   applyTheme();
   renderGlobalLimit();
   renderBridge();
   renderList();
+  refreshDisk();
 
   await listen('download://updated', (e) => {
     upsert(e.payload);
@@ -982,13 +1138,18 @@ async function init() {
   });
   await listen('download://progress', (e) => onProgress(e.payload));
   await listen('download://removed', (e) => {
-    state.downloads.delete(e.payload);
-    state.elements.get(e.payload)?.remove();
-    state.elements.delete(e.payload);
-    state.expanded.delete(e.payload);
+    const id = e.payload;
+    state.downloads.delete(id);
+    state.rows.get(id)?.remove();
+    state.rows.delete(id);
+    state.selected.delete(id);
+    if (state.focus === id) state.focus = null;
     renderList();
   });
-  await listen('download://completed', (e) => toast(`Download complete: ${e.payload.fileName}`, 'success'));
+  await listen('download://completed', (e) => {
+    toast(`Download complete: ${e.payload.fileName}`, 'success');
+    refreshDisk();
+  });
   await listen('bridge://status', (e) => {
     state.bridge = e.payload;
     renderBridge();
@@ -999,12 +1160,12 @@ async function init() {
   });
   await listen('bridge://captured', (e) => toast(`Captured from browser: ${e.payload.fileName}`, 'success'));
 
-  // Speed graph: one sample per second, even when nothing is downloading.
   setInterval(() => {
-    state.speedHistory.push(renderStats());
+    state.speedHistory.push(renderStatusbar());
     state.speedHistory.shift();
     drawSparkline();
   }, 1000);
+  setInterval(refreshDisk, 30000);
   drawSparkline();
 }
 

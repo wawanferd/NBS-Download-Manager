@@ -1,24 +1,33 @@
-:root {
-  --bg: #ffffff;
-  --surface: #f3f5fa;
-  --border: #e3e7f0;
-  --text: #141a2e;
-  --muted: #7a82a0;
-  --accent: #4f6bff;
-  --accent-2: #8b5cf6;
-  --success: #16a34a;
-  --danger: #e5484d;
-  --warning: #d97706;
-  color-scheme: light;
+@font-face {
+  font-family: "Plus Jakarta Sans";
+  src: url("fonts/PlusJakartaSans.woff2") format("woff2");
+  font-weight: 200 800;
 }
-@media (prefers-color-scheme: dark) {
+
+:root {
+  --bg: #13131b;
+  --surface: #1b1b25;
+  --border: rgba(255, 255, 255, 0.08);
+  --text: #eeeef5;
+  --muted: #7d7d93;
+  --accent: #8b5cf6;
+  --grad: linear-gradient(135deg, #2dd4bf 0%, #7c6cf6 55%, #b157f7 100%);
+  --success: #34d399;
+  --danger: #fb7185;
+  --warning: #fbbf24;
+  color-scheme: dark;
+}
+@media (prefers-color-scheme: light) {
   :root {
-    --bg: #151922;
-    --surface: #1d2230;
-    --border: #2a3040;
-    --text: #e8ebf4;
-    --muted: #8a92ab;
-    color-scheme: dark;
+    --bg: #ffffff;
+    --surface: #f5f6fa;
+    --border: rgba(20, 20, 50, 0.09);
+    --text: #15151f;
+    --muted: #8a8aa0;
+    --success: #059669;
+    --danger: #e11d48;
+    --warning: #d97706;
+    color-scheme: light;
   }
 }
 * { box-sizing: border-box; }
@@ -31,7 +40,7 @@ body {
   gap: 12px;
   background: var(--bg);
   color: var(--text);
-  font: 13px/1.4 -apple-system, BlinkMacSystemFont, "Segoe UI", Inter, Roboto, Ubuntu, sans-serif;
+  font: 13px/1.4 "Plus Jakarta Sans", -apple-system, BlinkMacSystemFont, "Segoe UI", Inter, Roboto, Ubuntu, sans-serif;
 }
 button, input { font: inherit; color: inherit; }
 .head { display: flex; align-items: center; gap: 11px; }
@@ -47,19 +56,19 @@ button, input { font: inherit; color: inherit; }
 .notice { padding: 9px 11px; border-radius: 10px; font-size: 12px; background: rgba(229, 72, 77, 0.1); color: var(--danger); }
 .notice.ok { background: rgba(22, 163, 74, 0.1); color: var(--success); }
 
-.card { display: flex; align-items: center; gap: 12px; padding: 12px; border-radius: 12px; background: var(--surface); border: 1px solid var(--border); cursor: pointer; }
+.card { display: flex; align-items: center; gap: 12px; padding: 12px 14px; border-radius: 14px; background: var(--surface); border: 1px solid var(--border); cursor: pointer; }
 .toggle-text { display: flex; flex-direction: column; gap: 2px; flex: 1; }
 .toggle-text span { color: var(--muted); font-size: 12px; }
 .toggle input, .check input { position: absolute; opacity: 0; pointer-events: none; }
 .switch { position: relative; width: 36px; height: 20px; border-radius: 20px; background: var(--border); flex: none; transition: background 0.2s; }
 .switch::after { content: ""; position: absolute; top: 2px; left: 2px; width: 16px; height: 16px; border-radius: 50%; background: #fff; box-shadow: 0 1px 3px rgba(0, 0, 0, 0.25); transition: transform 0.2s; }
-input:checked + .switch { background: var(--accent); }
+input:checked + .switch { background: var(--grad); }
 input:checked + .switch::after { transform: translateX(16px); }
 
 .send { display: flex; gap: 8px; }
 .send input, .row input {
   flex: 1;
-  height: 36px;
+  height: 38px;
   min-width: 0;
   padding: 0 11px;
   border-radius: 10px;
@@ -67,8 +76,8 @@ input:checked + .switch::after { transform: translateX(16px); }
   background: var(--bg);
   outline: none;
 }
-.send input:focus, .row input:focus { border-color: var(--accent); box-shadow: 0 0 0 3px rgba(79, 107, 255, 0.15); }
-.btn-primary { width: 36px; height: 36px; flex: none; display: grid; place-items: center; border: 0; border-radius: 10px; background: linear-gradient(135deg, var(--accent), var(--accent-2)); color: #fff; cursor: pointer; }
+.send input:focus, .row input:focus { border-color: var(--accent); box-shadow: 0 0 0 3px rgba(139, 92, 246, 0.2); }
+.btn-primary { width: 38px; height: 38px; flex: none; display: grid; place-items: center; border: 0; border-radius: 10px; background: var(--grad); color: #fff; cursor: pointer; box-shadow: 0 8px 18px -8px rgba(139, 92, 246, 0.9); }
 .btn-primary svg { width: 18px; height: 18px; }
 .btn-primary:disabled { opacity: 0.6; }
 

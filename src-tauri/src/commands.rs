@@ -151,6 +151,34 @@ pub async fn reveal_download(app: AppHandle, state: State<'_, AppState>, id: Str
 }
 
 #[tauri::command]
+pub async fn open_folder(app: AppHandle, path: String) -> CmdResult<()> {
+    std::fs::create_dir_all(&path).map_err(err)?;
+    app.opener().open_path(path, None::<&str>).map_err(err)
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DiskSpace {
+    total: u64,
+    free: u64,
+}
+
+/// Capacity of the disk holding `path` (or its nearest existing parent).
+#[tauri::command]
+pub async fn disk_space(path: String) -> CmdResult<DiskSpace> {
+    let mut dir = PathBuf::from(path);
+    while !dir.exists() {
+        if !dir.pop() {
+            return Err("folder does not exist".into());
+        }
+    }
+    Ok(DiskSpace {
+        total: fs2::total_space(&dir).map_err(err)?,
+        free: fs2::available_space(&dir).map_err(err)?,
+    })
+}
+
+#[tauri::command]
 pub async fn bridge_status(state: State<'_, AppState>) -> CmdResult<BridgeStatus> {
     Ok(state.bridge.status())
 }

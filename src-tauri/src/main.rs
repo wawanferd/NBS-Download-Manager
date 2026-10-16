@@ -160,6 +160,8 @@ fn main() {
             commands::open_download,
             commands::reveal_download,
             commands::bridge_status,
+            commands::disk_space,
+            commands::open_folder,
             commands::install_native_host,
             commands::app_info,
         ])

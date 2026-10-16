@@ -7,113 +7,221 @@
     <link rel="stylesheet" href="styles.css" />
   </head>
   <body>
-    <div class="app">
+    <div class="shell" id="shell">
+      <!-- Sidebar -->
       <aside class="sidebar">
         <div class="brand">
           <img src="logo.svg" alt="" class="brand-logo" />
           <div class="brand-text">
-            <strong>NBS</strong>
-            <span>Download Manager</span>
+            <strong>NBS Download</strong>
+            <span>Manager <em id="app-version">1.0</em></span>
           </div>
         </div>
 
-        <button class="btn btn-primary btn-block" id="btn-add" title="New download (Ctrl+N)">
-          <span data-icon="plus"></span> New download
-        </button>
+        <div class="nav-scroll">
+          <nav class="nav-group" id="nav-library">
+            <button class="nav-item active" data-filter="all"><span data-icon="folderDown"></span><span class="nav-label">All Downloads</span><span class="count" data-count="all"></span></button>
+            <div class="nav-children">
+              <button class="nav-item sub" data-filter="cat:archive"><span data-icon="archive"></span><span class="nav-label">Compressed</span><span class="count" data-count="cat:archive"></span></button>
+              <button class="nav-item sub" data-filter="cat:video"><span data-icon="video"></span><span class="nav-label">Videos</span><span class="count" data-count="cat:video"></span></button>
+              <button class="nav-item sub" data-filter="cat:audio"><span data-icon="music"></span><span class="nav-label">Music</span><span class="count" data-count="cat:audio"></span></button>
+              <button class="nav-item sub" data-filter="cat:app"><span data-icon="program"></span><span class="nav-label">Programs</span><span class="count" data-count="cat:app"></span></button>
+              <button class="nav-item sub" data-filter="cat:doc"><span data-icon="fileText"></span><span class="nav-label">Documents</span><span class="count" data-count="cat:doc"></span></button>
+              <button class="nav-item sub" data-filter="cat:image"><span data-icon="image"></span><span class="nav-label">Images</span><span class="count" data-count="cat:image"></span></button>
+              <button class="nav-item sub" data-filter="cat:other"><span data-icon="file"></span><span class="nav-label">Other</span><span class="count" data-count="cat:other"></span></button>
+            </div>
+          </nav>
 
-        <nav class="nav" id="nav">
-          <button class="nav-item active" data-filter="all"><span data-icon="layers"></span><span>All downloads</span><span class="count" data-count="all">0</span></button>
-          <button class="nav-item" data-filter="active"><span data-icon="arrowDown"></span><span>Downloading</span><span class="count" data-count="active">0</span></button>
-          <button class="nav-item" data-filter="queued"><span data-icon="hourglass"></span><span>Queued</span><span class="count" data-count="queued">0</span></button>
-          <button class="nav-item" data-filter="paused"><span data-icon="pauseCircle"></span><span>Paused</span><span class="count" data-count="paused">0</span></button>
-          <button class="nav-item" data-filter="completed"><span data-icon="checkCircle"></span><span>Completed</span><span class="count" data-count="completed">0</span></button>
-          <button class="nav-item" data-filter="failed"><span data-icon="alert"></span><span>Failed</span><span class="count" data-count="failed">0</span></button>
-        </nav>
+          <nav class="nav-group">
+            <div class="nav-title">Status</div>
+            <button class="nav-item" data-filter="active"><span data-icon="arrowDown"></span><span class="nav-label">Downloading</span><span class="count" data-count="active"></span></button>
+            <button class="nav-item" data-filter="unfinished"><span data-icon="pauseCircle"></span><span class="nav-label">Unfinished</span><span class="count" data-count="unfinished"></span></button>
+            <button class="nav-item" data-filter="completed"><span data-icon="folderCheck"></span><span class="nav-label">Finished</span><span class="count" data-count="completed"></span></button>
+            <button class="nav-item" data-filter="failed"><span data-icon="alert"></span><span class="nav-label">Failed</span><span class="count" data-count="failed"></span></button>
+          </nav>
+        </div>
 
-        <div class="sidebar-bottom">
-          <label class="limit-card">
-            <span class="limit-label"><span data-icon="gauge"></span> Speed limit</span>
-            <select id="global-limit" class="select-compact">
-              <option value="0">Unlimited</option>
-              <option value="262144">256 KB/s</option>
-              <option value="524288">512 KB/s</option>
-              <option value="1048576">1 MB/s</option>
-              <option value="2097152">2 MB/s</option>
-              <option value="5242880">5 MB/s</option>
-              <option value="10485760">10 MB/s</option>
-              <option value="custom">Custom…</option>
-            </select>
-          </label>
-          <button class="bridge-card" id="bridge-card" title="Browser integration settings">
-            <span class="dot" id="bridge-dot"></span>
-            <span class="bridge-text">
-              <span class="bridge-title">Browser integration</span>
-              <span class="bridge-sub" id="bridge-sub">Starting…</span>
-            </span>
-          </button>
+        <div class="disk-card" id="disk-card" title="Open download folder">
+          <div class="disk-head">
+            <span data-icon="hardDrive"></span>
+            <span>Disk space</span>
+          </div>
+          <div class="gauge">
+            <svg viewBox="0 0 120 68" aria-hidden="true">
+              <defs>
+                <linearGradient id="gauge-grad" x1="0" x2="1" y1="0" y2="0">
+                  <stop offset="0" stop-color="#2dd4bf" />
+                  <stop offset="1" stop-color="#a855f7" />
+                </linearGradient>
+              </defs>
+              <path class="gauge-track" d="M10 60 A50 50 0 0 1 110 60" />
+              <path class="gauge-fill" id="gauge-fill" d="M10 60 A50 50 0 0 1 110 60" pathLength="100" />
+            </svg>
+            <div class="gauge-value"><strong id="disk-pct">—</strong><span>used</span></div>
+          </div>
+          <div class="disk-path" id="disk-path">—</div>
+          <div class="disk-free" id="disk-free">—</div>
         </div>
       </aside>
 
-      <main class="main">
-        <header class="topbar">
-          <div class="title-block">
-            <h1 id="view-title">All downloads</h1>
-            <p class="subtitle" id="view-subtitle">0 items</p>
-          </div>
-          <div class="topbar-actions">
-            <label class="search">
-              <span data-icon="search"></span>
-              <input id="search" type="search" placeholder="Search downloads" autocomplete="off" spellcheck="false" />
-            </label>
-            <button class="icon-btn" id="btn-resume-all" title="Resume all"><span data-icon="play"></span></button>
-            <button class="icon-btn" id="btn-pause-all" title="Pause all"><span data-icon="pause"></span></button>
-            <button class="icon-btn" id="btn-clear" title="Clear completed from list"><span data-icon="checkCheck"></span></button>
-            <button class="icon-btn" id="btn-theme" title="Toggle theme"><span data-icon="moon"></span></button>
-            <button class="icon-btn" id="btn-settings" title="Settings"><span data-icon="settings"></span></button>
+      <!-- Main -->
+      <section class="main">
+        <header class="toolbar">
+          <form class="addurl" id="quick-add" autocomplete="off">
+            <span data-icon="link"></span>
+            <input id="quick-url" type="text" placeholder="Paste a link and press Enter…" spellcheck="false" />
+            <button type="submit" class="addurl-go" title="Add download (Ctrl+N)"><span data-icon="cloudDownload"></span></button>
+          </form>
+
+          <div class="tools">
+            <button class="tool" id="tool-resume" title="Resume selected"><span data-icon="play"></span><span>Resume</span></button>
+            <button class="tool" id="tool-pause" title="Pause selected"><span data-icon="pause"></span><span>Pause</span></button>
+            <button class="tool" id="tool-stop-all" title="Pause all downloads"><span data-icon="square"></span><span>Stop All</span></button>
+            <span class="tool-sep"></span>
+            <button class="tool" id="tool-delete" title="Delete selected (Del)"><span data-icon="trash"></span><span>Delete</span></button>
+            <button class="tool" id="tool-clear" title="Remove finished downloads from the list"><span data-icon="checkCheck"></span><span>Clear</span></button>
+            <span class="tool-sep"></span>
+            <button class="tool" id="tool-settings" title="Options"><span data-icon="settings"></span><span>Options</span></button>
+            <button class="tool" id="tool-theme" title="Toggle theme"><span data-icon="moon"></span><span>Theme</span></button>
           </div>
         </header>
 
-        <section class="stats">
-          <div class="stat stat-speed">
-            <div class="stat-text">
-              <div class="stat-label">Total speed</div>
-              <div class="stat-value" id="stat-speed">0 B/s</div>
-              <div class="stat-hint" id="stat-limit-hint">No limit</div>
+        <div class="board">
+          <div class="table-wrap">
+            <div class="table-tools">
+              <div class="view-title">
+                <h1 id="view-title">All Downloads</h1>
+                <span class="view-count" id="view-count">0</span>
+              </div>
+              <label class="search">
+                <span data-icon="search"></span>
+                <input id="search" type="search" placeholder="Search in the list" autocomplete="off" spellcheck="false" />
+              </label>
+            </div>
+
+            <div class="thead" role="row">
+              <span class="col-check"><button class="check" id="check-all" aria-label="Select all"></button></span>
+              <button class="th" data-sort="name">Name <span data-icon="sort"></span></button>
+              <button class="th" data-sort="size">Size <span data-icon="sort"></span></button>
+              <button class="th" data-sort="status">Status <span data-icon="sort"></span></button>
+              <button class="th col-speed" data-sort="speed">Speed <span data-icon="sort"></span></button>
+              <button class="th col-eta" data-sort="eta">Time left <span data-icon="sort"></span></button>
+              <button class="th col-added" data-sort="added">Added <span data-icon="sort"></span></button>
+            </div>
+            <div class="tbody" id="list" role="rowgroup"></div>
+
+            <div class="empty" id="empty" hidden>
+              <div class="empty-art"><span data-icon="cloudDownload"></span></div>
+              <h2 id="empty-title">No downloads yet</h2>
+              <p id="empty-text">Paste a link above, press <kbd>Ctrl</kbd> <kbd>N</kbd>, or click a download in your browser once the extension is installed.</p>
+            </div>
+          </div>
+
+          <!-- Details drawer -->
+          <aside class="drawer" id="drawer" hidden>
+            <header class="drawer-head">
+              <div class="ftile ftile-lg" id="d-tile"></div>
+              <div class="drawer-title">
+                <h2 id="d-name">—</h2>
+                <span id="d-host">—</span>
+              </div>
+              <button class="icon-btn" id="d-close" title="Close"><span data-icon="x"></span></button>
+            </header>
+
+            <div class="drawer-body">
+              <section class="d-progress">
+                <div class="d-progress-top">
+                  <span class="d-pct" id="d-pct">0%</span>
+                  <span class="status-tag" id="d-status">—</span>
+                </div>
+                <div class="segmap" id="d-segmap"></div>
+                <div class="d-progress-sub" id="d-progress-sub">—</div>
+              </section>
+
+              <div class="chips">
+                <span class="chip"><span data-icon="hardDrive"></span><b id="d-size">—</b></span>
+                <span class="chip"><span data-icon="clock"></span><b id="d-eta">—</b></span>
+                <span class="chip chip-accent"><span data-icon="zap"></span><b id="d-speed">—</b></span>
+              </div>
+
+              <div class="d-actions">
+                <button class="btn btn-primary" id="d-toggle"><span data-icon="pause"></span><span>Pause</span></button>
+                <button class="btn btn-secondary" id="d-folder"><span data-icon="folder"></span><span>Folder</span></button>
+                <button class="icon-btn icon-btn-box" id="d-more" title="More"><span data-icon="more"></span></button>
+              </div>
+
+              <section class="d-card">
+                <div class="d-card-row">
+                  <label for="d-conn">Connections</label>
+                  <output class="pill-count" id="d-conn-out">8</output>
+                </div>
+                <div class="conn-picker" id="d-conn" role="radiogroup" aria-label="Connections"></div>
+                <div class="d-card-row d-limit-row">
+                  <label for="d-limit">Speed limit</label>
+                  <div class="input-suffix compact">
+                    <input id="d-limit" type="number" min="0" placeholder="Unlimited" />
+                    <span>KB/s</span>
+                  </div>
+                </div>
+              </section>
+
+              <section class="d-section" id="d-conns-section">
+                <h3>Segments <span id="d-conns-count"></span></h3>
+                <div class="conn-list" id="d-conns"></div>
+              </section>
+
+              <section class="d-section">
+                <h3>Information</h3>
+                <dl class="info">
+                  <dt>Address</dt><dd class="mono" id="d-url">—</dd>
+                  <dt>Saved to</dt><dd id="d-path">—</dd>
+                  <dt>Resume</dt><dd id="d-resume">—</dd>
+                  <dt>Added</dt><dd id="d-added">—</dd>
+                </dl>
+              </section>
+
+              <div class="d-error" id="d-error" hidden></div>
+            </div>
+          </aside>
+        </div>
+
+        <footer class="statusbar">
+          <div class="sb-speed">
+            <span class="sb-icon"><span data-icon="arrowDownLine"></span></span>
+            <div>
+              <strong id="sb-speed">0 B/s</strong>
+              <span id="sb-active">Idle</span>
             </div>
             <canvas id="sparkline" aria-hidden="true"></canvas>
           </div>
-          <div class="stat">
-            <div class="stat-label">Active</div>
-            <div class="stat-value" id="stat-active">0</div>
-            <div class="stat-hint" id="stat-active-hint">of 3 slots</div>
+          <div class="sb-right">
+            <label class="sb-limit" title="Global speed limit">
+              <span data-icon="gauge"></span>
+              <select id="global-limit">
+                <option value="0">No speed limit</option>
+                <option value="262144">256 KB/s</option>
+                <option value="524288">512 KB/s</option>
+                <option value="1048576">1 MB/s</option>
+                <option value="2097152">2 MB/s</option>
+                <option value="5242880">5 MB/s</option>
+                <option value="10485760">10 MB/s</option>
+                <option value="custom">Custom…</option>
+              </select>
+            </label>
+            <button class="sb-bridge" id="sb-bridge" title="Browser integration">
+              <span class="dot" id="bridge-dot"></span>
+              <span id="bridge-text">Browser…</span>
+            </button>
           </div>
-          <div class="stat">
-            <div class="stat-label">Remaining</div>
-            <div class="stat-value" id="stat-remaining">—</div>
-            <div class="stat-hint" id="stat-remaining-hint">nothing pending</div>
-          </div>
-          <div class="stat">
-            <div class="stat-label">Completed</div>
-            <div class="stat-value" id="stat-completed">0</div>
-            <div class="stat-hint" id="stat-completed-hint">0 B total</div>
-          </div>
-        </section>
-
-        <section class="list" id="list" aria-live="polite"></section>
-
-        <div class="empty" id="empty" hidden>
-          <div class="empty-icon"><span data-icon="inbox"></span></div>
-          <h2 id="empty-title">No downloads yet</h2>
-          <p id="empty-text">Paste a link or press <kbd>Ctrl</kbd> + <kbd>N</kbd> to start. Downloads from your browser appear here automatically once the extension is installed.</p>
-          <button class="btn btn-primary" id="btn-empty-add"><span data-icon="plus"></span> New download</button>
-        </div>
-      </main>
+        </footer>
+      </section>
     </div>
 
     <!-- New download -->
     <dialog class="dialog" id="dlg-add">
       <form id="add-form" method="dialog" novalidate>
         <header class="dialog-head">
+          <div class="dialog-icon"><span data-icon="cloudDownload"></span></div>
           <div>
             <h2>New download</h2>
             <p class="dialog-sub" id="add-source">Enter a link to download</p>
@@ -130,7 +238,7 @@
           </div>
 
           <div class="probe" id="probe" data-state="idle">
-            <div class="probe-badge file-badge" id="probe-badge">FILE</div>
+            <div class="ftile" id="probe-tile"></div>
             <div class="probe-body">
               <div class="probe-title" id="probe-title">—</div>
               <div class="probe-meta" id="probe-meta"></div>
@@ -139,12 +247,12 @@
           </div>
 
           <div class="field">
-            <label for="add-name">File name</label>
+            <label for="add-name">Save as</label>
             <input id="add-name" type="text" placeholder="Detected automatically" autocomplete="off" spellcheck="false" />
           </div>
 
           <div class="field">
-            <label for="add-dir">Save to</label>
+            <label for="add-dir">Folder</label>
             <div class="input-group">
               <input id="add-dir" type="text" autocomplete="off" spellcheck="false" />
               <button type="button" class="btn btn-secondary" id="add-browse"><span data-icon="folder"></span> Browse</button>
@@ -153,9 +261,8 @@
 
           <div class="field-row">
             <div class="field">
-              <label for="add-conn">Connections <output id="add-conn-out" class="pill-count">8</output></label>
-              <input id="add-conn" type="range" min="1" max="8" value="8" />
-              <div class="conn-viz" id="add-conn-viz"></div>
+              <label>Connections <output id="add-conn-out" class="pill-count">8</output></label>
+              <div class="conn-picker" id="add-conn" role="radiogroup" aria-label="Connections"></div>
             </div>
             <div class="field">
               <label for="add-limit">Speed limit</label>
@@ -183,8 +290,9 @@
     <dialog class="dialog dialog-wide" id="dlg-settings">
       <form id="settings-form" method="dialog" novalidate>
         <header class="dialog-head">
+          <div class="dialog-icon"><span data-icon="settings"></span></div>
           <div>
-            <h2>Settings</h2>
+            <h2>Options</h2>
             <p class="dialog-sub" id="settings-version">NBS Download Manager</p>
           </div>
           <button type="button" class="icon-btn" data-close title="Close"><span data-icon="x"></span></button>
@@ -199,21 +307,21 @@
                 <button type="button" class="btn btn-secondary" id="set-browse"><span data-icon="folder"></span> Browse</button>
               </div>
             </div>
+            <div class="field">
+              <label>Connections per download <output id="set-conn-out" class="pill-count">8</output></label>
+              <div class="conn-picker" id="set-conn" role="radiogroup" aria-label="Connections"></div>
+            </div>
             <div class="field-row">
-              <div class="field">
-                <label for="set-conn">Connections per download <output id="set-conn-out" class="pill-count">8</output></label>
-                <input id="set-conn" type="range" min="1" max="8" />
-              </div>
               <div class="field">
                 <label for="set-concurrent">Simultaneous downloads</label>
                 <input id="set-concurrent" type="number" min="1" max="16" />
               </div>
-            </div>
-            <div class="field">
-              <label for="set-limit">Global speed limit</label>
-              <div class="input-suffix">
-                <input id="set-limit" type="number" min="0" placeholder="Unlimited" />
-                <span>KB/s</span>
+              <div class="field">
+                <label for="set-limit">Global speed limit</label>
+                <div class="input-suffix">
+                  <input id="set-limit" type="number" min="0" placeholder="Unlimited" />
+                  <span>KB/s</span>
+                </div>
               </div>
             </div>
           </section>
@@ -235,7 +343,7 @@
               </div>
             </div>
             <div class="field">
-              <label>Native messaging host <span class="label-hint">(optional — lets the extension launch the app)</span></label>
+              <label>Native messaging host <span class="label-hint">optional — lets the extension launch the app</span></label>
               <div class="btn-row" id="native-buttons">
                 <button type="button" class="btn btn-secondary btn-sm" data-browser="chrome">Chrome</button>
                 <button type="button" class="btn btn-secondary btn-sm" data-browser="edge">Edge</button>
@@ -252,9 +360,9 @@
             <div class="field">
               <label>Theme</label>
               <div class="segmented" id="set-theme">
-                <button type="button" data-value="system">System</button>
-                <button type="button" data-value="light">Light</button>
                 <button type="button" data-value="dark">Dark</button>
+                <button type="button" data-value="light">Light</button>
+                <button type="button" data-value="system">System</button>
               </div>
             </div>
             <label class="switch-row">
@@ -276,7 +384,7 @@
       </form>
     </dialog>
 
-    <!-- Generic confirm / prompt -->
+    <!-- Confirm / prompt -->
     <dialog class="dialog dialog-small" id="dlg-confirm">
       <form method="dialog">
         <div class="dialog-body confirm-body">
@@ -288,6 +396,11 @@
               <span id="confirm-suffix">KB/s</span>
             </div>
           </div>
+          <label class="switch-row" id="confirm-check-row" hidden>
+            <input type="checkbox" id="confirm-check" />
+            <span class="switch"></span>
+            <span id="confirm-check-label">Also delete files from disk</span>
+          </label>
         </div>
         <footer class="dialog-foot">
           <button type="button" class="btn btn-ghost" data-close>Cancel</button>
