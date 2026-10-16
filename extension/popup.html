@@ -1,0 +1,59 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>NBS Download Manager</title>
+    <link rel="stylesheet" href="popup.css" />
+  </head>
+  <body>
+    <header class="head">
+      <img src="icons/logo.svg" alt="" class="logo" />
+      <div class="title">
+        <strong>NBS Download Manager</strong>
+        <span id="status" class="status"><span class="dot"></span><span id="status-text">Checking…</span></span>
+      </div>
+    </header>
+
+    <div class="notice" id="notice" hidden></div>
+
+    <label class="card toggle">
+      <span class="toggle-text">
+        <strong>Capture browser downloads</strong>
+        <span>Send downloads to the app for multi-connection speed</span>
+      </span>
+      <input type="checkbox" id="enabled" />
+      <span class="switch"></span>
+    </label>
+
+    <form class="send" id="send-form">
+      <input id="send-url" type="url" placeholder="Paste a link to download…" autocomplete="off" spellcheck="false" />
+      <button type="submit" class="btn-primary" title="Send to NBS">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 4v12M6 11l6 6 6-6M5 20h14" /></svg>
+      </button>
+    </form>
+
+    <details class="settings">
+      <summary>Settings</summary>
+      <div class="row">
+        <label for="port">App port</label>
+        <input id="port" type="number" min="1024" max="65535" />
+      </div>
+      <div class="row">
+        <label for="min-size">Skip files smaller than</label>
+        <span class="suffix"><input id="min-size" type="number" min="0" placeholder="0" /><span>KB</span></span>
+      </div>
+      <label class="row check">
+        <span>Use native messaging (launches the app if it is closed)</span>
+        <input type="checkbox" id="use-native" />
+      </label>
+      <button type="button" id="grant" class="btn-link" hidden>Allow access to cookies for authenticated downloads</button>
+    </details>
+
+    <footer class="foot">
+      <button type="button" id="reconnect" class="btn-ghost">Reconnect</button>
+      <span id="version" class="version"></span>
+    </footer>
+
+    <script src="popup.js"></script>
+  </body>
+</html>
