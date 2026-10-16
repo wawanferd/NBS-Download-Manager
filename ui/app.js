@@ -684,19 +684,13 @@ function drawSparkline() {
     const xm = (i - 0.5) * step;
     ctx.bezierCurveTo(xm, y(data[i - 1]), xm, y(data[i]), i * step, y(data[i]));
   }
-  const stroke = ctx.createLinearGradient(0, 0, w, 0);
-  stroke.addColorStop(0, '#2dd4bf');
-  stroke.addColorStop(1, '#a855f7');
-  ctx.strokeStyle = stroke;
+  ctx.strokeStyle = '#7c5cf6';
   ctx.lineWidth = 2;
   ctx.stroke();
   ctx.lineTo(w, h);
   ctx.lineTo(0, h);
   ctx.closePath();
-  const fill = ctx.createLinearGradient(0, 0, 0, h);
-  fill.addColorStop(0, 'rgba(139, 92, 246, 0.3)');
-  fill.addColorStop(1, 'rgba(139, 92, 246, 0)');
-  ctx.fillStyle = fill;
+  ctx.fillStyle = 'rgba(124, 92, 246, 0.14)';
   ctx.fill();
 }
 
