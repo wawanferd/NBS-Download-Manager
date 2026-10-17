@@ -33,21 +33,22 @@ Prasyarat: Rust stable, Node.js 18+, dan [dependensi sistem Tauri](https://v2.ta
 ```bash
 npm install
 npm run dev      # build native host + jalankan aplikasi dalam mode dev
-npm run build    # installer release (di src-tauri/../target/release/bundle)
+npm run build    # installer release (di target/release/bundle), native host ikut dibundel
 cargo test       # tes engine (segmentasi, pause/resume, limiter, merging, antrean)
 ```
 
+`npm run build` memakai `src-tauri/tauri.bundle.conf.json`: sebelum compile, `scripts/prepare-native-host.mjs` membangun
+`nbs-native-host` lalu menaruhnya di `src-tauri/binaries/` agar ikut terpasang di samping aplikasi. `cargo build`/`cargo test`
+biasa tidak membutuhkannya.
+
 ### Build release Windows
 
-```bash
-./scripts/build-windows.sh
-```
+Di Windows cukup `npm run build` — hasilnya installer NSIS (`target/release/bundle/nsis/*-setup.exe`, per-user tanpa hak admin)
+dan MSI (`target/release/bundle/msi/*.msi`).
 
-Menghasilkan installer `target/x86_64-pc-windows-msvc/release/bundle/nsis/NBS Download Manager_<versi>_x64-setup.exe`
-(per-user, tanpa hak admin; `nbs-native-host.exe` ikut terpasang di samping aplikasi). Script ini jalan langsung di Windows
-(Git Bash), dan dari Linux/macOS lewat cross-compile `cargo-xwin` (perlu `rustup target add x86_64-pc-windows-msvc`,
-`cargo install --locked cargo-xwin`, serta `nsis`, `lld`, `llvm`, `clang`). Installer MSI hanya bisa dibuat di Windows:
-`BUNDLES=nsis,msi ./scripts/build-windows.sh`.
+Dari Linux/macOS bisa cross-compile installer NSIS dengan `./scripts/build-windows.sh` (perlu
+`rustup target add x86_64-pc-windows-msvc`, `cargo install --locked cargo-xwin`, serta `nsis`, `lld`, `llvm`, `clang`);
+hasilnya di `target/x86_64-pc-windows-msvc/release/bundle/nsis/`.
 
 Workflow GitHub Actions `.github/workflows/windows-release.yml` membuat installer NSIS + MSI di runner Windows (jalankan manual
 dari tab *Actions*, atau push tag `v*` untuk membuat draft release berisi installer).
