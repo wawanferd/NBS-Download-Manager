@@ -3,7 +3,7 @@
   "name": "NBS Download Manager Integration",
   "short_name": "NBS DM",
   "version": "1.0.0",
-  "description": "Captures browser downloads and hands them to NBS Download Manager for fast, resumable, multi-connection downloading.",
+  "description": "Sends browser downloads, magnet links and .torrent files to NBS Download Manager for fast downloads and torrent streaming.",
   "key": "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAvBdRn0kDoDQs1sOwm06B4OrEqJrxeQusAPrpEGkDUZzU6BQP81RlrfKYJnxt/I0pm8yCG0WL1xt/Dikk9Xsx4vc4a8fobcitLz+/xNlw7ztFLk+7cP5s8oRjMXqNvA1DeHzXUXvOAaol5fIMQbgAmS8KpWR/tt0r3Nuj0MiaMALE+cgZj26tJtPB26psuEi4goJHQ+iJBNkkJZRq1tL+J/I9Gh5+Fek+dpD5kse/KIoNhOxjV/+WoY9huMCdsbZHO5/GyUfuGMwpE9Fx5HrlV0+d6/X8K2XiluT/hCsEh8zBZXidAu1Aic93AomJ2I0m9mXcxmus6qr4uHvjarnXwwIDAQAB",
   "icons": {
     "16": "icons/icon-16.png",

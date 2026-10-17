@@ -6,6 +6,7 @@ mod commands;
 mod native_host;
 mod settings;
 mod state;
+mod torrent;
 
 use std::sync::Arc;
 
@@ -19,6 +20,7 @@ use tauri_plugin_notification::NotificationExt;
 use crate::bridge::Bridge;
 use crate::settings::Settings;
 use crate::state::AppState;
+use crate::torrent::Torrents;
 
 pub fn show_main_window(app: &AppHandle) {
     if let Some(window) = app.get_webview_window("main") {
@@ -66,8 +68,18 @@ fn build_tray(app: &tauri::App) -> tauri::Result<()> {
             let state = app.state::<AppState>();
             match event.id().as_ref() {
                 "show" => show_main_window(app),
-                "pause_all" => state.manager.pause_all(),
-                "resume_all" => state.manager.resume_all(),
+                "pause_all" => {
+                    state.manager.pause_all();
+                    if let Some(torrents) = state.torrents.running() {
+                        tauri::async_runtime::spawn(async move { torrents.pause_all().await });
+                    }
+                }
+                "resume_all" => {
+                    state.manager.resume_all();
+                    if let Some(torrents) = state.torrents.running() {
+                        tauri::async_runtime::spawn(async move { torrents.resume_all().await });
+                    }
+                }
                 "quit" => {
                     state.manager.persist();
                     app.exit(0);
@@ -105,17 +117,24 @@ fn setup(app: &mut tauri::App) -> Result<(), Box<dyn std::error::Error>> {
     settings.apply_to(&mut config);
     let sink = event_sink(handle.clone());
     let global_limit = settings.global_speed_limit;
+    let downloads_path = data_dir.join("downloads.json");
     let manager = tauri::async_runtime::block_on(async move {
-        DownloadManager::new(data_dir.join("downloads.json"), config, global_limit, sink)
+        DownloadManager::new(downloads_path, config, global_limit, sink)
     })?;
 
     let bridge = Arc::new(Bridge::default());
     let port = settings.bridge_port;
+    let torrents = Arc::new(Torrents::default());
+    torrent::start(handle.clone(), torrents.clone(), data_dir.join("torrents"), &settings);
+    for open in torrent::opens_from_args(std::env::args().skip(1)) {
+        torrents.open(&handle, open);
+    }
     app.manage(AppState {
         manager: manager.clone(),
         settings: Mutex::new(settings),
         settings_path,
         bridge: bridge.clone(),
+        torrents,
     });
 
     tauri::async_runtime::spawn(async move { manager.run_ticker().await });
@@ -126,7 +145,14 @@ fn setup(app: &mut tauri::App) -> Result<(), Box<dyn std::error::Error>> {
 
 fn main() {
     tauri::Builder::default()
-        .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| show_main_window(app)))
+        .plugin(tauri_plugin_single_instance::init(|app, args, _cwd| {
+            show_main_window(app);
+            if let Some(state) = app.try_state::<AppState>() {
+                for open in torrent::opens_from_args(args.into_iter().skip(1)) {
+                    state.torrents.open(app, open);
+                }
+            }
+        }))
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_notification::init())
@@ -164,14 +190,52 @@ fn main() {
             commands::open_folder,
             commands::install_native_host,
             commands::app_info,
+            torrent::torrent_status,
+            torrent::torrent_list,
+            torrent::take_torrent_opens,
+            torrent::torrent_inspect,
+            torrent::torrent_add,
+            torrent::torrent_pause,
+            torrent::torrent_resume,
+            torrent::torrent_remove,
+            torrent::torrent_set_files,
+            torrent::torrent_stream_url,
+            torrent::torrent_subtitle,
+            torrent::torrent_keep,
+            torrent::torrent_open,
+            torrent::torrent_reveal,
+            torrent::pick_torrent_file,
+            torrent::play_external,
+            torrent::pick_player,
+            torrent::register_magnet_handler,
         ])
         .build(tauri::generate_context!())
         .expect("error while building NBS Download Manager")
-        .run(|app, event| {
-            if let RunEvent::Exit = event {
+        .run(|app, event| match event {
+            RunEvent::Exit => {
                 if let Some(state) = app.try_state::<AppState>() {
                     state.manager.persist();
+                    if let Some(torrents) = state.torrents.running() {
+                        // Pauses torrents so their progress is saved.
+                        tauri::async_runtime::block_on(async move {
+                            let _ = tokio::time::timeout(std::time::Duration::from_secs(3), torrents.shutdown()).await;
+                        });
+                    }
                 }
             }
+            // macOS delivers file associations and URL schemes as events.
+            #[cfg(target_os = "macos")]
+            RunEvent::Opened { urls } => {
+                if let Some(state) = app.try_state::<AppState>() {
+                    let args = urls.into_iter().map(|u| match u.to_file_path() {
+                        Ok(path) => path.to_string_lossy().into_owned(),
+                        Err(()) => u.to_string(),
+                    });
+                    for open in torrent::opens_from_args(args) {
+                        state.torrents.open(app, open);
+                    }
+                }
+            }
+            _ => {}
         });
 }

@@ -55,12 +55,18 @@ pub async fn remove_download(state: State<'_, AppState>, id: String, delete_file
 #[tauri::command]
 pub async fn pause_all(state: State<'_, AppState>) -> CmdResult<()> {
     state.manager.pause_all();
+    if let Some(torrents) = state.torrents.running() {
+        torrents.pause_all().await;
+    }
     Ok(())
 }
 
 #[tauri::command]
 pub async fn resume_all(state: State<'_, AppState>) -> CmdResult<()> {
     state.manager.resume_all();
+    if let Some(torrents) = state.torrents.running() {
+        torrents.resume_all().await;
+    }
     Ok(())
 }
 
@@ -97,6 +103,11 @@ pub async fn save_settings(app: AppHandle, state: State<'_, AppState>, settings:
     settings.save(&state.settings_path).map_err(err)?;
     state.manager.update_config(|c| settings.apply_to(c));
     state.manager.set_global_speed_limit(settings.global_speed_limit);
+    if let Some(torrents) = state.torrents.running() {
+        torrents.set_rate_limits(settings.torrent_download_limit, settings.torrent_upload_limit);
+        torrents.set_upload_mode(settings.torrent_upload_mode);
+        torrents.set_download_dir(settings.torrent_download_dir());
+    }
     if old_port != settings.bridge_port {
         state.bridge.start(app, settings.bridge_port);
     }

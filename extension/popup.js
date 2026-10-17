@@ -75,8 +75,8 @@ $('grant').addEventListener('click', async () => {
 $('send-form').addEventListener('submit', async (e) => {
   e.preventDefault();
   const url = $('send-url').value.trim();
-  if (!/^https?:\/\/\S+/i.test(url)) {
-    notice('Enter a valid http(s) link.');
+  if (!/^(https?:\/\/\S+|magnet:\?\S+)/i.test(url)) {
+    notice('Enter a valid http(s) or magnet link.');
     return;
   }
   const button = e.submitter || $('send-form').querySelector('button');

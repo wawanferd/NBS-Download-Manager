@@ -320,10 +320,13 @@ api.runtime.onStartup?.addListener(() => {
 
 api.contextMenus.onClicked.addListener(async (info, tab) => {
   const url = info.linkUrl || info.srcUrl;
-  if (!url || !/^https?:/i.test(url)) return;
+  if (!url) return;
+  // Magnet links go to the app's torrent engine; the browser cannot fetch them.
+  const magnet = /^magnet:/i.test(url);
+  if (!magnet && !/^https?:/i.test(url)) return;
   const referrer = info.pageUrl || tab?.url || null;
   if ((await bridge.ensure(2000, true)) && (await sendToApp({ url, referrer }))) return;
-  await downloadInBrowser(url);
+  if (!magnet) await downloadInBrowser(url);
 });
 
 /* ---------- Popup messages ---------- */

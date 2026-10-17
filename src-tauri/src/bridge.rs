@@ -17,6 +17,7 @@ use tokio_tungstenite::tungstenite::http::StatusCode;
 use tokio_tungstenite::tungstenite::Message;
 
 use crate::state::AppState;
+use crate::torrent::TorrentOpen;
 
 #[derive(Default)]
 pub struct Bridge {
@@ -170,10 +171,20 @@ fn is_extension_origin(origin: &str) -> bool {
         .any(|p| origin.starts_with(p))
 }
 
+/// Magnet links and .torrent files go to the torrent engine instead.
+fn is_torrent(d: &BrowserDownload) -> bool {
+    let path = d.url.split(['?', '#']).next().unwrap_or_default().to_ascii_lowercase();
+    d.url.trim_start().to_ascii_lowercase().starts_with("magnet:")
+        || path.ends_with(".torrent")
+        || d.filename.as_deref().is_some_and(|f| f.to_ascii_lowercase().ends_with(".torrent"))
+        || d.mime.as_deref().is_some_and(|m| m.eq_ignore_ascii_case("application/x-bittorrent"))
+}
+
 fn accept_download(app: &AppHandle, d: BrowserDownload) -> Result<(), String> {
     let url = d.url.trim().to_string();
-    if !(url.starts_with("http://") || url.starts_with("https://")) {
-        return Err("only http and https downloads can be captured".into());
+    let torrent = is_torrent(&d);
+    if !(url.starts_with("http://") || url.starts_with("https://") || (torrent && url.starts_with("magnet:"))) {
+        return Err("only http(s) downloads and magnet links can be captured".into());
     }
     let mut headers = Vec::new();
     for (name, value) in [("Referer", d.referrer), ("Cookie", d.cookies), ("User-Agent", d.user_agent)] {
@@ -184,6 +195,11 @@ fn accept_download(app: &AppHandle, d: BrowserDownload) -> Result<(), String> {
     let file_name = d.filename.filter(|f| !f.is_empty());
 
     let state = app.state::<AppState>();
+    if torrent {
+        let open = TorrentOpen { link: Some(url), path: None, headers, source: Some("browser".into()) };
+        state.torrents.open(app, open);
+        return Ok(());
+    }
     if state.settings.lock().auto_start_browser {
         let view = state
             .manager
@@ -221,6 +237,19 @@ mod tests {
         assert!(is_extension_origin("moz-extension://1234-5678"));
         assert!(!is_extension_origin("https://evil.example"));
         assert!(!is_extension_origin("null"));
+    }
+
+    #[test]
+    fn recognizes_torrents() {
+        let msg = |json: &str| match serde_json::from_str::<Incoming>(json).unwrap() {
+            Incoming::Download(d) => d,
+            _ => unreachable!(),
+        };
+        assert!(is_torrent(&msg(r#"{"type":"download","url":"magnet:?xt=urn:btih:abc"}"#)));
+        assert!(is_torrent(&msg(r#"{"type":"download","url":"https://x.org/a.TORRENT?dl=1"}"#)));
+        assert!(is_torrent(&msg(r#"{"type":"download","url":"https://x.org/get?id=1","filename":"Show.torrent"}"#)));
+        assert!(is_torrent(&msg(r#"{"type":"download","url":"https://x.org/get","mime":"application/x-bittorrent"}"#)));
+        assert!(!is_torrent(&msg(r#"{"type":"download","url":"https://x.org/a.zip","filename":"a.zip"}"#)));
     }
 
     #[test]

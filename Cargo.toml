@@ -1,6 +1,8 @@
 [workspace]
 resolver = "2"
-members = ["crates/nbs-core", "src-tauri", "native-host"]
+members = ["crates/nbs-core", "crates/nbs-torrent", "src-tauri", "native-host"]
+# Vendored dependencies are patched in below, not workspace members.
+exclude = ["third_party"]
 
 [workspace.package]
 version = "1.0.0"
@@ -12,3 +14,11 @@ codegen-units = 1
 lto = true
 opt-level = 3
 strip = true
+
+# librqbit with fixes for sparse files on Windows (and TrntStream's
+# preview-only piece picking); see third_party/librqbit/TRNTSTREAM_PATCH.md.
+# The tracker client also works on systems without IPv6; see
+# third_party/librqbit-tracker-comms/NBS_PATCH.md.
+[patch.crates-io]
+librqbit = { path = "third_party/librqbit" }
+librqbit-tracker-comms = { path = "third_party/librqbit-tracker-comms" }

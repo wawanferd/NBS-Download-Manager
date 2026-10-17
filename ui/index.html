@@ -33,6 +33,13 @@
           </nav>
 
           <nav class="nav-group">
+            <div class="nav-title">Torrents</div>
+            <button class="nav-item" data-filter="torrent"><span data-icon="magnet"></span><span class="nav-label">All Torrents</span><span class="count" data-count="torrent"></span></button>
+            <button class="nav-item" data-filter="stream"><span data-icon="tv"></span><span class="nav-label">Streams</span><span class="count" data-count="stream"></span></button>
+            <button class="nav-item" data-filter="seeding"><span data-icon="upload"></span><span class="nav-label">Seeding</span><span class="count" data-count="seeding"></span></button>
+          </nav>
+
+          <nav class="nav-group">
             <div class="nav-title">Status</div>
             <button class="nav-item" data-filter="active"><span data-icon="arrowDown"></span><span class="nav-label">Downloading</span><span class="count" data-count="active"></span></button>
             <button class="nav-item" data-filter="unfinished"><span data-icon="pauseCircle"></span><span class="nav-label">Unfinished</span><span class="count" data-count="unfinished"></span></button>
@@ -63,11 +70,13 @@
         <header class="toolbar">
           <form class="addurl" id="quick-add" autocomplete="off">
             <span data-icon="link"></span>
-            <input id="quick-url" type="text" placeholder="Paste a link and press Enter…" spellcheck="false" />
+            <input id="quick-url" type="text" placeholder="Paste a link or magnet and press Enter…" spellcheck="false" />
             <button type="submit" class="addurl-go" title="Add download (Ctrl+N)"><span data-icon="cloudDownload"></span></button>
           </form>
 
           <div class="tools">
+            <button class="tool" id="tool-torrent" title="Add a torrent (Ctrl+T)"><span data-icon="magnet"></span><span>Torrent</span></button>
+            <span class="tool-sep"></span>
             <button class="tool" id="tool-resume" title="Resume selected"><span data-icon="play"></span><span>Resume</span></button>
             <button class="tool" id="tool-pause" title="Pause selected"><span data-icon="pause"></span><span>Pause</span></button>
             <button class="tool" id="tool-stop-all" title="Pause all downloads"><span data-icon="square"></span><span>Stop All</span></button>
@@ -107,7 +116,7 @@
             <div class="empty" id="empty" hidden>
               <div class="empty-art"><span data-icon="cloudDownload"></span></div>
               <h2 id="empty-title">No downloads yet</h2>
-              <p id="empty-text">Paste a link above, press <kbd>Ctrl</kbd> <kbd>N</kbd>, or click a download in your browser once the extension is installed.</p>
+              <p id="empty-text">Paste a link or magnet above, press <kbd>Ctrl</kbd> <kbd>N</kbd> (<kbd>Ctrl</kbd> <kbd>T</kbd> for torrents), or click a download in your browser once the extension is installed.</p>
             </div>
           </div>
 
@@ -140,11 +149,12 @@
 
               <div class="d-actions">
                 <button class="btn btn-primary" id="d-toggle"><span data-icon="pause"></span><span>Pause</span></button>
+                <button class="btn btn-secondary" id="d-play" hidden><span data-icon="play"></span><span>Stream</span></button>
                 <button class="btn btn-secondary" id="d-folder"><span data-icon="folder"></span><span>Folder</span></button>
                 <button class="icon-btn icon-btn-box" id="d-more" title="More"><span data-icon="more"></span></button>
               </div>
 
-              <section class="d-card">
+              <section class="d-card" id="d-conn-card">
                 <div class="d-card-row">
                   <label for="d-conn">Connections</label>
                   <output class="pill-count" id="d-conn-out">8</output>
@@ -164,12 +174,17 @@
                 <div class="conn-list" id="d-conns"></div>
               </section>
 
+              <section class="d-section" id="d-files-section" hidden>
+                <h3>Files <span id="d-files-count"></span></h3>
+                <div class="tfile-list" id="d-files"></div>
+              </section>
+
               <section class="d-section">
                 <h3>Information</h3>
                 <dl class="info">
                   <dt>Address</dt><dd class="mono" id="d-url">—</dd>
                   <dt>Saved to</dt><dd id="d-path">—</dd>
-                  <dt>Resume</dt><dd id="d-resume">—</dd>
+                  <dt id="d-resume-label">Resume</dt><dd id="d-resume">—</dd>
                   <dt>Added</dt><dd id="d-added">—</dd>
                 </dl>
               </section>
@@ -280,6 +295,99 @@
       </form>
     </dialog>
 
+    <!-- Add torrent -->
+    <dialog class="dialog dialog-wide" id="dlg-torrent">
+      <form id="torrent-form" method="dialog" novalidate>
+        <header class="dialog-head">
+          <div class="dialog-icon"><span data-icon="magnet"></span></div>
+          <div>
+            <h2>Add torrent</h2>
+            <p class="dialog-sub" id="tor-source">Magnet link, info-hash, .torrent link or file</p>
+          </div>
+          <button type="button" class="icon-btn" data-close title="Close"><span data-icon="x"></span></button>
+        </header>
+        <div class="dialog-body">
+          <div class="field">
+            <label for="tor-link">Magnet or link</label>
+            <div class="input-group">
+              <div class="input-icon">
+                <span data-icon="magnet"></span>
+                <input id="tor-link" type="text" placeholder="magnet:?xt=urn:btih:…" autocomplete="off" spellcheck="false" />
+              </div>
+              <button type="button" class="btn btn-secondary" id="tor-file"><span data-icon="fileUp"></span> Open .torrent</button>
+            </div>
+          </div>
+
+          <div class="probe" id="tor-probe" data-state="idle">
+            <div class="ftile cat-torrent" id="tor-tile"></div>
+            <div class="probe-body">
+              <div class="probe-title" id="tor-title">—</div>
+              <div class="probe-meta" id="tor-meta"></div>
+            </div>
+            <div class="spinner" aria-hidden="true"></div>
+          </div>
+
+          <div class="field" id="tor-files-field" hidden>
+            <label>Files <span class="label-hint" id="tor-selected"></span>
+              <span class="label-links"><button type="button" class="link-btn" id="tor-all">All</button><button type="button" class="link-btn" id="tor-none">None</button><button type="button" class="link-btn" id="tor-videos">Videos</button></span>
+            </label>
+            <div class="tfile-pick" id="tor-files"></div>
+          </div>
+
+          <div class="field" id="tor-dir-field">
+            <label for="tor-dir">Download to</label>
+            <div class="input-group">
+              <input id="tor-dir" type="text" autocomplete="off" spellcheck="false" />
+              <button type="button" class="btn btn-secondary" id="tor-browse"><span data-icon="folder"></span> Browse</button>
+            </div>
+          </div>
+
+          <label class="switch-row">
+            <input type="checkbox" id="tor-start" checked />
+            <span class="switch"></span>
+            <span>Start downloading immediately</span>
+          </label>
+        </div>
+        <footer class="dialog-foot">
+          <button type="button" class="btn btn-ghost" data-close>Cancel</button>
+          <button type="button" class="btn btn-secondary" id="tor-stream" disabled title="Play while it downloads"><span data-icon="play"></span> Stream</button>
+          <button type="submit" class="btn btn-primary" id="tor-download" disabled><span data-icon="download"></span> Download</button>
+        </footer>
+      </form>
+    </dialog>
+
+    <!-- Stream player -->
+    <dialog class="dialog player" id="dlg-player">
+      <header class="player-head">
+        <div class="ftile cat-video"><span data-icon="tv"></span></div>
+        <div class="player-title">
+          <h2 id="pl-title">—</h2>
+          <span id="pl-stats">Preparing stream…</span>
+        </div>
+        <label class="player-select" title="File">
+          <span data-icon="video"></span>
+          <select id="pl-file"></select>
+        </label>
+        <label class="player-select" title="Subtitles">
+          <span data-icon="captions"></span>
+          <select id="pl-subs"></select>
+        </label>
+        <button type="button" class="btn btn-secondary btn-sm" id="pl-external" title="Open in an external media player"><span data-icon="external"></span> Open in player</button>
+        <button type="button" class="icon-btn" id="pl-copy" title="Copy stream address"><span data-icon="copy"></span></button>
+        <button type="button" class="icon-btn" data-close title="Close (Esc)"><span data-icon="x"></span></button>
+      </header>
+      <div class="player-stage">
+        <video id="pl-video" controls autoplay playsinline></video>
+        <div class="player-overlay" id="pl-loading"><div class="spinner"></div><span>Fetching the first pieces…</span></div>
+        <div class="player-overlay player-error" id="pl-error" hidden>
+          <span data-icon="alert"></span>
+          <strong>This file can't be played in the built-in player</strong>
+          <p id="pl-error-text">Its video or audio format is not supported here. Open it in an external player such as VLC or mpv — the torrent keeps streaming while it plays.</p>
+          <button type="button" class="btn btn-primary" id="pl-error-external"><span data-icon="external"></span> Open in player</button>
+        </div>
+      </div>
+    </dialog>
+
     <!-- Settings -->
     <dialog class="dialog dialog-wide" id="dlg-settings">
       <form id="settings-form" method="dialog" novalidate>
@@ -347,6 +455,66 @@
               </div>
             </div>
             <p class="help" id="set-ext-ids"></p>
+          </section>
+
+          <section class="settings-section">
+            <h3>Torrents</h3>
+            <div class="integration-status" id="set-torrent-status"></div>
+            <div class="field">
+              <label for="set-tdir">Torrent download folder</label>
+              <div class="input-group">
+                <input id="set-tdir" type="text" spellcheck="false" placeholder="Same as the default folder" />
+                <button type="button" class="btn btn-secondary" id="set-tbrowse"><span data-icon="folder"></span> Browse</button>
+              </div>
+            </div>
+            <div class="field">
+              <label for="set-sdir">Stream cache folder <span class="label-hint">applies after a restart</span></label>
+              <div class="input-group">
+                <input id="set-sdir" type="text" spellcheck="false" />
+                <button type="button" class="btn btn-secondary" id="set-sbrowse"><span data-icon="folder"></span> Browse</button>
+              </div>
+            </div>
+            <div class="field-row">
+              <div class="field">
+                <label for="set-tdown">Download limit</label>
+                <div class="input-suffix">
+                  <input id="set-tdown" type="number" min="0" placeholder="Unlimited" />
+                  <span>KB/s</span>
+                </div>
+              </div>
+              <div class="field">
+                <label for="set-tup">Upload limit</label>
+                <div class="input-suffix">
+                  <input id="set-tup" type="number" min="0" placeholder="Unlimited" />
+                  <span>KB/s</span>
+                </div>
+              </div>
+            </div>
+            <div class="field">
+              <label>When a torrent finishes</label>
+              <div class="segmented" id="set-upmode">
+                <button type="button" data-value="normal">Keep seeding</button>
+                <button type="button" data-value="stopWhenDone">Stop seeding</button>
+                <button type="button" data-value="disabled">Never upload</button>
+              </div>
+              <p class="help" id="set-upmode-help"></p>
+            </div>
+            <div class="field-row">
+              <div class="field">
+                <label for="set-tport">Listen port <span class="label-hint">0 = random, after a restart</span></label>
+                <input id="set-tport" type="number" min="0" max="65535" />
+              </div>
+              <div class="field">
+                <label for="set-player">External player</label>
+                <div class="input-group">
+                  <input id="set-player" type="text" spellcheck="false" placeholder="System default" />
+                  <button type="button" class="btn btn-secondary" id="set-pbrowse" title="Choose a media player"><span data-icon="folder"></span></button>
+                </div>
+              </div>
+            </div>
+            <div class="btn-row">
+              <button type="button" class="btn btn-secondary btn-sm" id="set-magnet"><span data-icon="magnet"></span> Open magnet links with NBS</button>
+            </div>
           </section>
 
           <section class="settings-section">

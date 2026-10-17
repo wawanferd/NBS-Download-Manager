@@ -33,6 +33,9 @@ const FILTERS = {
   unfinished: { title: 'Unfinished', match: (d) => d.status !== 'completed' },
   completed: { title: 'Finished', match: (d) => d.status === 'completed' },
   failed: { title: 'Failed', match: (d) => d.status === 'failed' },
+  torrent: { title: 'Torrents', match: (d) => isTorrent(d) },
+  stream: { title: 'Streams', match: (d) => isTorrent(d) && d.stream },
+  seeding: { title: 'Seeding', match: (d) => isTorrent(d) && d.seeding },
 };
 for (const [key, cat] of Object.entries(CATEGORIES)) {
   FILTERS[`cat:${key}`] = { title: key === 'other' ? 'Other files' : `${cat.label}${cat.label.endsWith('c') ? '' : 's'}`, match: (d) => category(d.fileName) === key };
@@ -52,6 +55,7 @@ const state = {
   settings: null,
   bridge: null,
   appInfo: null,
+  torrentStatus: null,
   speedHistory: new Array(60).fill(0),
 };
 
@@ -103,15 +107,41 @@ function host(url) {
   }
 }
 
-function setTile(el, name) {
-  const cat = category(name);
+function setTile(el, name, torrent = false) {
+  const cat = torrent ? 'torrent' : category(name);
   const size = el.classList.contains('ftile-lg') ? ' ftile-lg' : '';
   el.className = `ftile${size} cat-${cat}`;
-  el.innerHTML = icon(CATEGORIES[cat].icon);
+  el.innerHTML = icon(torrent ? 'magnet' : CATEGORIES[cat].icon);
 }
 
 const isUrl = (s) => /^https?:\/\/\S+$/i.test((s || '').trim());
 const progress = (d) => (d.status === 'completed' ? 1 : d.totalSize ? Math.min(1, d.downloaded / d.totalSize) : 0);
+
+function isTorrent(d) {
+  return d?.kind === 'torrent';
+}
+
+/** Magnet links, bare info-hashes and links to .torrent files. */
+function isTorrentLink(s) {
+  const t = (s || '').trim();
+  return /^magnet:\?/i.test(t) || /^[0-9a-f]{40}$/i.test(t) || /^[a-z2-7]{32}$/i.test(t) || /^https?:\/\/[^?#\s]+\.torrent([?#]\S*)?$/i.test(t);
+}
+
+function statusLabel(d) {
+  if (isTorrent(d)) {
+    if (d.status === 'connecting') return 'Checking';
+    if (d.status === 'completed') return d.seeding ? 'Seeding' : 'Complete';
+  }
+  return STATUS_LABEL[d.status];
+}
+
+const isMedia = (f) => f.kind === 'video' || f.kind === 'audio';
+/** The file to play: the largest selected video, else any video or audio. */
+function bestMedia(t) {
+  const media = (t.files || []).filter(isMedia);
+  const by = (list) => list.sort((a, b) => (b.kind === 'video') - (a.kind === 'video') || b.size - a.size)[0];
+  return by(media.filter((f) => f.included)) || by(media) || null;
+}
 
 /* ---------- Toasts, menu, dialogs ---------- */
 
@@ -243,20 +273,25 @@ function canResume(d) {
   return d.status === 'paused' || d.status === 'failed';
 }
 function canPause(d) {
-  return ACTIVE.has(d.status) || d.status === 'queued';
+  return ACTIVE.has(d.status) || d.status === 'queued' || (isTorrent(d) && d.seeding);
 }
+
+const pauseItem = (d) => call(isTorrent(d) ? 'torrent_pause' : 'pause_download', { id: d.id });
+const resumeItem = (d) => call(isTorrent(d) ? 'torrent_resume' : 'resume_download', { id: d.id });
+const openItem = (d) => call(isTorrent(d) ? 'torrent_open' : 'open_download', { id: d.id });
+const revealItem = (d) => call(isTorrent(d) ? 'torrent_reveal' : 'reveal_download', { id: d.id });
 
 function primaryAction(d) {
   if (!d) return;
-  if (canPause(d)) call('pause_download', { id: d.id });
-  else if (canResume(d)) call('resume_download', { id: d.id });
-  else if (d.status === 'completed') call('open_download', { id: d.id });
+  if (canPause(d)) pauseItem(d);
+  else if (canResume(d)) resumeItem(d);
+  else if (d.status === 'completed') openItem(d);
 }
 
 async function deleteDownloads(list) {
   if (!list.length) return;
   const one = list.length === 1;
-  const anyFile = list.some((d) => d.status === 'completed');
+  const anyFile = list.some((d) => d.status === 'completed' && !(isTorrent(d) && d.stream));
   const r = await ask({
     title: one ? 'Delete download?' : `Delete ${list.length} downloads?`,
     text: one ? `“${list[0].fileName}” will be removed from the list.` : 'The selected downloads will be removed from the list.',
@@ -265,7 +300,10 @@ async function deleteDownloads(list) {
     checkbox: { label: anyFile ? 'Also delete downloaded files from disk' : 'Also delete partial data', checked: !anyFile },
   });
   if (!r.ok) return;
-  for (const d of list) await call('remove_download', { id: d.id, deleteFile: r.checked });
+  for (const d of list) {
+    if (isTorrent(d)) await call('torrent_remove', { id: d.id, deleteFiles: r.checked });
+    else await call('remove_download', { id: d.id, deleteFile: r.checked });
+  }
 }
 
 async function copyText(text) {
@@ -279,7 +317,7 @@ async function copyText(text) {
     document.execCommand('copy');
     ta.remove();
   }
-  toast('Link copied to clipboard');
+  toast(text.startsWith('magnet:') ? 'Magnet link copied to clipboard' : 'Link copied to clipboard');
 }
 
 async function restart(d) {
@@ -299,16 +337,41 @@ async function promptDownloadLimit(d) {
   if (kb != null) await call('set_download_speed_limit', { id: d.id, limit: kb > 0 ? Math.round(kb * 1024) : null });
 }
 
+async function keepTorrent(t) {
+  await call('torrent_keep', { id: t.id });
+  toast(`Moved to ${state.settings.torrentDir || state.settings.downloadDir}`, 'success');
+}
+
+function torrentMenuEntries(t) {
+  const entries = [];
+  const media = bestMedia(t);
+  if (media) entries.push({ icon: 'play', label: t.status === 'completed' ? 'Play' : 'Stream (play while downloading)', action: () => openPlayer(t, media.index) });
+  if (t.status === 'completed') entries.push({ icon: 'external', label: 'Open', action: () => openItem(t) });
+  entries.push({ icon: 'folder', label: 'Open Folder', action: () => revealItem(t) });
+  if (canResume(t)) entries.push({ icon: 'play', label: t.status === 'failed' ? 'Retry' : 'Resume', action: () => resumeItem(t) });
+  if (t.status === 'completed' && !t.seeding && !state.torrentStatus?.info?.uploadDisabled) entries.push({ icon: 'upload', label: 'Start Seeding', action: () => resumeItem(t) });
+  if (t.seeding) entries.push({ icon: 'pause', label: 'Stop Seeding', action: () => pauseItem(t) });
+  else if (canPause(t)) entries.push({ icon: 'pause', label: 'Pause', action: () => pauseItem(t) });
+  entries.push('-');
+  if (t.stream) entries.push({ icon: 'folderDown', label: 'Keep (move to download folder)', action: () => keepTorrent(t) });
+  entries.push({ icon: 'copy', label: 'Copy Magnet Link', action: () => copyText(t.url) });
+  entries.push({ icon: 'panelRight', label: 'Properties', action: () => focusRow(t.id, true) });
+  entries.push('-');
+  entries.push({ icon: 'trash', label: 'Delete', danger: true, action: () => deleteDownloads([t]) });
+  return entries;
+}
+
 function menuEntries(d) {
   const multi = state.selected.size > 1;
+  if (!multi && isTorrent(d)) return torrentMenuEntries(d);
   const list = multi ? selectedDownloads() : [d];
   const entries = [];
   if (!multi && d.status === 'completed') {
-    entries.push({ icon: 'external', label: 'Open', action: () => call('open_download', { id: d.id }) });
+    entries.push({ icon: 'external', label: 'Open', action: () => openItem(d) });
   }
-  if (!multi) entries.push({ icon: 'folder', label: 'Open Folder', action: () => call('reveal_download', { id: d.id }) });
-  if (list.some(canResume)) entries.push({ icon: 'play', label: multi ? 'Resume Selected' : d.status === 'failed' ? 'Retry Download' : 'Resume Download', action: () => list.filter(canResume).forEach((x) => call('resume_download', { id: x.id })) });
-  if (list.some(canPause)) entries.push({ icon: 'pause', label: multi ? 'Pause Selected' : 'Pause Download', action: () => list.filter(canPause).forEach((x) => call('pause_download', { id: x.id })) });
+  if (!multi) entries.push({ icon: 'folder', label: 'Open Folder', action: () => revealItem(d) });
+  if (list.some(canResume)) entries.push({ icon: 'play', label: multi ? 'Resume Selected' : d.status === 'failed' ? 'Retry Download' : 'Resume Download', action: () => list.filter(canResume).forEach(resumeItem) });
+  if (list.some(canPause)) entries.push({ icon: 'pause', label: multi ? 'Pause Selected' : 'Pause Download', action: () => list.filter(canPause).forEach(pauseItem) });
   if (!multi) {
     entries.push('-');
     entries.push({ icon: 'copy', label: 'Copy Address', action: () => copyText(d.url) });
@@ -378,9 +441,11 @@ function updateRow(el, d) {
   if (r.name.textContent !== d.fileName) {
     r.name.textContent = d.fileName;
     el.title = d.fileName;
-    setTile(r.tile, d.fileName);
+    setTile(r.tile, d.fileName, isTorrent(d));
   }
-  r.sub.textContent = `${CATEGORIES[category(d.fileName)].label}${host(d.url) ? ` · ${host(d.url)}` : ''}${d.source === 'browser' ? ' · from browser' : ''}`;
+  r.sub.textContent = isTorrent(d)
+    ? `${d.stream ? 'Stream' : 'Torrent'} · ${d.files.filter((f) => f.included).length} of ${d.files.length} file${d.files.length === 1 ? '' : 's'}${d.peers ? ` · ${d.peers} peer${d.peers === 1 ? '' : 's'}` : ''}${d.source === 'browser' ? ' · from browser' : ''}`
+    : `${CATEGORIES[category(d.fileName)].label}${host(d.url) ? ` · ${host(d.url)}` : ''}${d.source === 'browser' ? ' · from browser' : ''}`;
   r.size.textContent = d.totalSize != null ? fmtBytes(d.totalSize) : d.downloaded ? fmtBytes(d.downloaded) : '—';
 
   const pct = Math.floor(progress(d) * 100);
@@ -388,7 +453,9 @@ function updateRow(el, d) {
   let line;
   switch (d.status) {
     case 'completed':
-      line = `<span class="status-completed">${icon('checkCircle')}</span><span class="status-completed">Complete</span>`;
+      line = d.seeding
+        ? `<span class="status-seeding">${icon('upload')}</span><span class="status-seeding">Seeding</span><span class="up">${fmtSpeed(d.uploadSpeed)}</span>`
+        : `<span class="status-completed">${icon('checkCircle')}</span><span class="status-completed">Complete</span>`;
       break;
     case 'failed':
       line = `<span class="status-failed">${icon('alert')}</span><span class="status-failed" title="${escapeHtml(d.error)}">Failed${d.totalSize ? ` · ${pct}%` : ''}</span>`;
@@ -400,7 +467,7 @@ function updateRow(el, d) {
       line = `<span>Downloading</span>${d.totalSize ? `<b>${pct}%</b>` : `<b>${fmtBytes(d.downloaded)}</b>`}`;
       break;
     default:
-      line = `<span class="status-${d.status}">${STATUS_LABEL[d.status]}${d.status === 'merging' ? '…' : ''}</span>`;
+      line = `<span class="status-${d.status}">${statusLabel(d)}${d.status === 'merging' || isTorrent(d) ? '…' : ''}</span>`;
   }
   if (r.status.innerHTML !== line) r.status.innerHTML = line;
   r.bar.hidden = d.status === 'completed';
@@ -495,7 +562,7 @@ function updateToolbar() {
   $('#tool-pause').disabled = !sel.some(canPause);
   $('#tool-delete').disabled = sel.length === 0;
   $('#tool-stop-all').disabled = ![...state.downloads.values()].some(canPause);
-  $('#tool-clear').disabled = ![...state.downloads.values()].some((d) => d.status === 'completed');
+  $('#tool-clear').disabled = ![...state.downloads.values()].some((d) => d.status === 'completed' && !isTorrent(d));
 
   const visible = visibleDownloads();
   const n = visible.filter((d) => state.selected.has(d.id)).length;
@@ -514,20 +581,28 @@ function renderDrawer() {
 
   if (drawer.dataset.id !== d.id) {
     drawer.dataset.id = d.id;
-    setTile($('#d-tile'), d.fileName);
+    setTile($('#d-tile'), d.fileName, isTorrent(d));
     $('#d-conns').innerHTML = '';
     $('#d-segmap').innerHTML = '';
+    $('#d-files').innerHTML = '';
   }
   $('#d-name').textContent = d.fileName;
   $('#d-name').title = d.fileName;
-  $('#d-host').textContent = host(d.url) || '—';
+  $('#d-host').textContent = isTorrent(d) ? (d.stream ? 'Torrent stream' : 'Torrent') : host(d.url) || '—';
 
   const pct = progress(d);
   $('#d-pct').textContent = `${Math.floor(pct * 100)}%`;
   const tag = $('#d-status');
-  tag.textContent = STATUS_LABEL[d.status];
+  tag.textContent = statusLabel(d);
   tag.className = `status-tag ${d.status}`;
   renderSegmap($('#d-segmap'), d);
+  if (isTorrent(d)) return renderTorrentDrawer(d);
+  $('#d-conn-card').hidden = false;
+  $('#d-files-section').hidden = true;
+  $('#d-play').hidden = true;
+  $('#d-folder').classList.remove('icon-only');
+  $('#d-toggle').title = '';
+  $('#d-resume-label').textContent = 'Resume';
   $('#d-progress-sub').textContent =
     d.status === 'completed'
       ? `Finished ${fmtDate(d.completedAt, true)}`
@@ -589,7 +664,18 @@ function renderSegmap(map, d) {
   const done = d.status === 'completed';
   map.classList.toggle('done', done);
   const total = d.totalSize || 0;
-  const segs = done || !total ? [{ start: 0, len: 1, downloaded: done ? 1 : 0, merged: false, active: false }] : d.segments;
+  let segs = done || !total ? [{ start: 0, len: 1, downloaded: done ? 1 : 0, merged: false, active: false }] : d.segments;
+  if (isTorrent(d) && !done && total) {
+    // One block per selected file, laid out like the segments of a download.
+    let start = 0;
+    segs = d.files
+      .filter((f) => f.included)
+      .map((f) => {
+        const seg = { start, len: f.size, downloaded: f.downloaded, merged: false, active: d.status === 'downloading' && f.downloaded < f.size };
+        start += f.size;
+        return seg;
+      });
+  }
   const size = done || !total ? 1 : total;
   while (map.children.length > segs.length) map.lastChild.remove();
   while (map.children.length < segs.length) {
@@ -607,6 +693,101 @@ function renderSegmap(map, d) {
     el.classList.toggle('active', !!s.active && d.status === 'downloading');
     el.classList.toggle('merged', !!s.merged);
   });
+}
+
+const FILE_ICON = { video: 'video', audio: 'music', subtitle: 'captions', other: 'file' };
+const KIND_ORDER = ['video', 'audio', 'subtitle', 'other'];
+
+function renderTorrentDrawer(t) {
+  $('#d-conn-card').hidden = true;
+  $('#d-conns-section').hidden = true;
+  const included = t.files.filter((f) => f.included);
+  $('#d-progress-sub').textContent =
+    t.status === 'completed'
+      ? `${t.seeding ? 'Seeding' : 'Finished'}${t.completedAt ? ` · ${fmtDate(t.completedAt, true)}` : ''}`
+      : `${fmtBytes(t.downloaded)} of ${t.totalSize != null ? fmtBytes(t.totalSize) : 'unknown size'}${t.peers ? ` · ${t.peers} peer${t.peers === 1 ? '' : 's'}` : ''}`;
+  $('#d-size').textContent = t.totalSize != null ? fmtBytes(t.totalSize) : 'Unknown';
+  $('#d-eta').textContent = t.status === 'completed' ? 'Done' : t.status === 'downloading' ? fmtEta(t.eta) : '—';
+  $('#d-speed').textContent = fmtSpeed(t.status === 'downloading' ? t.speed : 0);
+
+  const toggle = $('#d-toggle');
+  const [ic, label] = t.seeding ? ['pause', 'Stop'] : canPause(t) ? ['pause', 'Pause'] : t.status === 'completed' ? ['external', 'Open'] : ['play', t.status === 'failed' ? 'Retry' : 'Resume'];
+  if (toggle.dataset.kind !== `${ic}${label}`) {
+    toggle.dataset.kind = `${ic}${label}`;
+    toggle.innerHTML = `${icon(ic)}<span>${label}</span>`;
+  }
+  toggle.title = t.seeding ? 'Stop seeding' : '';
+  const media = bestMedia(t);
+  $('#d-play').hidden = !media;
+  $('#d-play').lastChild.textContent = t.status === 'completed' ? 'Play' : 'Stream';
+  $('#d-folder').classList.toggle('icon-only', !!media);
+
+  $('#d-files-section').hidden = false;
+  $('#d-files-count').textContent = `${included.length}/${t.files.length}`;
+  const list = $('#d-files');
+  const files = [...t.files].sort((a, b) => b.included - a.included || KIND_ORDER.indexOf(a.kind) - KIND_ORDER.indexOf(b.kind) || a.path.localeCompare(b.path));
+  while (list.children.length > files.length) list.lastChild.remove();
+  files.forEach((f, i) => {
+    let row = list.children[i];
+    if (!row) {
+      row = document.createElement('div');
+      row.className = 'tfile';
+      row.innerHTML = `<span class="kind"></span><div class="tfile-name"><strong></strong><span></span></div><div class="tfile-actions"></div><div class="bar"><i></i></div>`;
+      list.append(row);
+    }
+    const p = f.size ? Math.min(1, f.downloaded / f.size) : 1;
+    row.className = `tfile${f.included ? '' : ' excluded'}${f.included && p >= 1 ? ' done' : ''}`;
+    row.title = f.path;
+    const kind = row.children[0];
+    kind.className = `kind ${f.kind}`;
+    if (kind.dataset.kind !== f.kind) {
+      kind.dataset.kind = f.kind;
+      kind.innerHTML = icon(FILE_ICON[f.kind]);
+    }
+    row.children[1].children[0].textContent = f.name;
+    row.children[1].children[1].textContent = `${fmtBytes(f.size)}${f.included ? ` · ${Math.floor(p * 100)}%` : ' · skipped'}`;
+    row.querySelector('.bar > i').style.width = `${p * 100}%`;
+    const actions = row.children[2];
+    const key = `${f.index}:${f.included}:${p >= 1}`;
+    if (actions.dataset.key !== key) {
+      actions.dataset.key = key;
+      actions.innerHTML = '';
+      const add = (name, title, cls, fn) => {
+        const b = document.createElement('button');
+        b.type = 'button';
+        b.className = `icon-btn ${cls}`;
+        b.title = title;
+        b.innerHTML = icon(name);
+        b.addEventListener('click', (e) => {
+          e.stopPropagation();
+          fn();
+        });
+        actions.append(b);
+      };
+      if (isMedia(f)) add('play', p >= 1 ? 'Play' : 'Stream', 'play', () => openPlayer(state.downloads.get(t.id), f.index));
+      if (f.included && p >= 1) add('external', 'Open', '', () => call('torrent_open', { id: t.id, file: f.index }));
+      add(f.included ? 'checkCircle' : 'plus', f.included ? 'Skip this file' : 'Download this file', f.included ? 'on' : '', () => toggleTorrentFile(t.id, f.index));
+    }
+  });
+
+  $('#d-url').textContent = t.url;
+  $('#d-path').textContent = t.finalPath || t.saveDir;
+  $('#d-resume-label').textContent = 'Transfer';
+  $('#d-resume').textContent = `${t.peers} peer${t.peers === 1 ? '' : 's'} · ↑ ${fmtSpeed(t.uploadSpeed)} · ${fmtBytes(t.uploaded)} uploaded`;
+  $('#d-added').textContent = fmtDate(t.createdAt, true);
+  const err = $('#d-error');
+  err.hidden = !t.error;
+  if (t.error) err.innerHTML = `${icon('alert')}<span>${escapeHtml(t.error)}</span>`;
+}
+
+async function toggleTorrentFile(id, index) {
+  const t = state.downloads.get(id);
+  if (!t) return;
+  const files = new Set(t.files.filter((f) => f.included).map((f) => f.index));
+  if (files.has(index)) files.delete(index);
+  else files.add(index);
+  if (!files.size) return toast('At least one file must stay selected', 'error');
+  await call('torrent_set_files', { id, files: [...files] });
 }
 
 /* ---------- List rendering ---------- */
@@ -649,15 +830,18 @@ function renderList() {
 
 function renderStatusbar() {
   const all = [...state.downloads.values()];
-  const active = all.filter((d) => ACTIVE.has(d.status));
+  const active = all.filter((d) => ACTIVE.has(d.status) && !isTorrent(d));
   const queued = all.filter((d) => d.status === 'queued').length;
-  const speed = active.reduce((s, d) => s + (d.speed || 0), 0);
+  const torrents = all.filter((d) => isTorrent(d) && ACTIVE.has(d.status)).length;
+  const seeding = all.filter((d) => isTorrent(d) && d.seeding).length;
+  const speed = all.filter((d) => ACTIVE.has(d.status)).reduce((s, d) => s + (d.speed || 0), 0);
+  const parts = [];
+  if (active.length) parts.push(`${active.length} active${queued ? ` · ${queued} queued` : ''} of ${state.settings?.maxConcurrent ?? 3} slots`);
+  else if (queued) parts.push(`${queued} queued`);
+  if (torrents) parts.push(`${torrents} torrent${torrents === 1 ? '' : 's'}`);
+  if (seeding) parts.push(`${seeding} seeding`);
   $('#sb-speed').textContent = fmtSpeed(speed);
-  $('#sb-active').textContent = active.length
-    ? `${active.length} active${queued ? ` · ${queued} queued` : ''} of ${state.settings?.maxConcurrent ?? 3} slots`
-    : queued
-      ? `${queued} queued`
-      : 'Idle';
+  $('#sb-active').textContent = parts.join(' · ') || 'Idle';
   return speed;
 }
 
@@ -718,7 +902,16 @@ async function refreshDisk() {
 function upsert(d) {
   const prev = state.downloads.get(d.id);
   state.downloads.set(d.id, d);
-  return !prev || prev.status !== d.status || prev.fileName !== d.fileName;
+  return !prev || prev.status !== d.status || prev.fileName !== d.fileName || prev.seeding !== d.seeding || prev.stream !== d.stream;
+}
+
+function removeItem(id) {
+  state.downloads.delete(id);
+  state.rows.get(id)?.remove();
+  state.rows.delete(id);
+  state.selected.delete(id);
+  if (state.focus === id) state.focus = null;
+  renderList();
 }
 
 function onProgress(views) {
@@ -883,6 +1076,10 @@ async function runProbe() {
 async function submitAdd(e) {
   e.preventDefault();
   const url = $('#add-url').value.trim();
+  if (isTorrentLink(url)) {
+    $('#dlg-add').close('cancel');
+    return openTorrentDialog({ link: url, headers: addState.headers, source: addState.source });
+  }
   if (!isUrl(url)) {
     toast('Please enter a valid http(s) link', 'error');
     return $('#add-url').focus();
@@ -913,6 +1110,307 @@ async function submitAdd(e) {
   }
 }
 
+/* ---------- Add torrent dialog ---------- */
+
+const torState = { seq: 0, open: null, preview: null, selected: new Set(), queue: [], timer: null };
+
+/** `open`: { link } (magnet, info-hash or .torrent URL) or { path } (.torrent file), plus optional headers/source. */
+function openTorrentDialog(open = {}) {
+  const dlg = $('#dlg-torrent');
+  if (dlg.open) {
+    if (open.link || open.path) torState.queue.push(open);
+    return;
+  }
+  torState.open = { headers: [], ...open };
+  torState.preview = null;
+  $('#tor-link').value = open.path || open.link || '';
+  $('#tor-source').textContent = open.source === 'browser' ? 'Captured from your browser' : open.path ? 'Torrent file' : 'Magnet link, info-hash, .torrent link or file';
+  $('#tor-dir').value = state.settings?.torrentDir || state.settings?.downloadDir || '';
+  $('#tor-start').checked = true;
+  setTorProbe('idle');
+  renderTorFiles();
+  dlg.showModal();
+  if (open.link || open.path) inspectTorrent();
+  else $('#tor-link').focus();
+}
+
+function setTorProbe(kind, info) {
+  const card = $('#tor-probe');
+  card.dataset.state = kind;
+  const meta = $('#tor-meta');
+  setTile($('#tor-tile'), '', true);
+  if (kind === 'loading') {
+    $('#tor-title').textContent = 'Fetching torrent information…';
+    meta.innerHTML = `<span>${torState.open?.path ? 'Reading the file' : 'Asking peers for the file list. Magnet links can take up to a minute.'}</span>`;
+  } else if (kind === 'error') {
+    $('#tor-title').textContent = info;
+    meta.innerHTML = '';
+  } else if (kind === 'ok') {
+    $('#tor-title').textContent = info.name;
+    const videos = info.files.filter((f) => f.kind === 'video').length;
+    const tags = [`<span class="tag">${fmtBytes(info.totalSize)}</span>`, `<span class="tag">${info.files.length} file${info.files.length === 1 ? '' : 's'}</span>`];
+    if (videos) tags.push(`<span class="tag">${videos} video${videos === 1 ? '' : 's'}</span>`);
+    if (info.existing) tags.push('<span class="tag warn">Already in your list</span>');
+    meta.innerHTML = tags.join('');
+  }
+}
+
+async function inspectTorrent() {
+  const open = torState.open;
+  if (!open?.path && !(open?.link || '').trim()) return setTorProbe('idle');
+  const seq = ++torState.seq;
+  torState.preview = null;
+  renderTorFiles();
+  setTorProbe('loading');
+  try {
+    const preview = await invoke('torrent_inspect', { open });
+    if (seq !== torState.seq) return;
+    torState.preview = preview;
+    torState.selected = new Set(preview.files.filter((f) => f.included).map((f) => f.index));
+    setTorProbe('ok', preview);
+    renderTorFiles();
+  } catch (e) {
+    if (seq === torState.seq) setTorProbe('error', String(e));
+  }
+}
+
+function renderTorFiles() {
+  const p = torState.preview;
+  $('#tor-files-field').hidden = !p || p.files.length < 2;
+  const sel = torState.selected;
+  const selected = p ? p.files.filter((f) => sel.has(f.index)) : [];
+  $('#tor-download').disabled = !p || !selected.length;
+  $('#tor-stream').disabled = !p || !p.files.some(isMedia);
+  $('#tor-dir-field').hidden = !!p?.existing;
+  if (!p) return;
+  $('#tor-selected').textContent = `${selected.length} of ${p.files.length} · ${fmtBytes(selected.reduce((n, f) => n + f.size, 0))}`;
+  const list = $('#tor-files');
+  list.innerHTML = '';
+  const files = [...p.files].sort((a, b) => KIND_ORDER.indexOf(a.kind) - KIND_ORDER.indexOf(b.kind) || a.path.localeCompare(b.path));
+  for (const f of files) {
+    const row = document.createElement('label');
+    row.className = 'tfile-opt';
+    row.title = f.path;
+    const on = sel.has(f.index);
+    const dir = f.path.includes('/') ? f.path.slice(0, f.path.lastIndexOf('/')) : '';
+    row.innerHTML = `<span class="check${on ? ' on' : ''}">${on ? icon('check') : ''}</span><span class="kind ${f.kind}">${icon(FILE_ICON[f.kind])}</span><span class="tfile-name"><strong>${escapeHtml(f.name)}</strong>${dir ? `<span>${escapeHtml(dir)}</span>` : ''}</span><span class="tfile-size">${fmtBytes(f.size)}</span>`;
+    row.addEventListener('click', (e) => {
+      e.preventDefault();
+      if (sel.has(f.index)) sel.delete(f.index);
+      else sel.add(f.index);
+      renderTorFiles();
+    });
+    list.append(row);
+  }
+}
+
+function selectTorFiles(pick) {
+  const p = torState.preview;
+  if (!p) return;
+  torState.selected = new Set(p.files.filter(pick).map((f) => f.index));
+  renderTorFiles();
+}
+
+async function addTorrent(mode) {
+  const p = torState.preview;
+  if (!p) return;
+  let files = [...torState.selected];
+  let play = null;
+  if (mode === 'stream') {
+    play = bestMedia({ files: p.files.map((f) => ({ ...f, included: torState.selected.has(f.index) })) });
+    if (!play) return toast('This torrent has no video or audio files', 'error');
+    files = [play.index];
+  } else if (!files.length) {
+    return toast('Select at least one file', 'error');
+  }
+  const request = {
+    id: p.id,
+    mode,
+    files,
+    saveDir: mode === 'download' ? $('#tor-dir').value.trim() || null : null,
+    start: mode === 'stream' || $('#tor-start').checked,
+    source: torState.open?.source || null,
+  };
+  const buttons = [$('#tor-download'), $('#tor-stream')];
+  buttons.forEach((b) => (b.disabled = true));
+  try {
+    const t = await call('torrent_add', { request });
+    $('#dlg-torrent').close('ok');
+    $('#quick-url').value = '';
+    if (p.existing && mode === 'download') toast('This torrent is already in your list');
+    if (!FILTERS[state.filter].match(t)) selectFilter('all');
+    upsert(t);
+    renderList();
+    focusRow(t.id, true);
+    if (play) openPlayer(t, play.index);
+  } finally {
+    renderTorFiles();
+  }
+}
+
+async function takeTorrentOpens() {
+  const opens = await invoke('take_torrent_opens');
+  opens.forEach(openTorrentDialog);
+}
+
+/* ---------- Stream player ---------- */
+
+const player = { id: null, file: null, url: null, seq: 0, subUrl: null };
+
+function stopVideo() {
+  const video = $('#pl-video');
+  video.pause();
+  video.removeAttribute('src');
+  video.load();
+  clearSubtitles();
+}
+
+function clearSubtitles() {
+  $$('#pl-video track').forEach((t) => t.remove());
+  if (player.subUrl) URL.revokeObjectURL(player.subUrl);
+  player.subUrl = null;
+}
+
+async function openPlayer(t, file) {
+  if (!t) return;
+  const seq = ++player.seq;
+  Object.assign(player, { id: t.id, file, url: null });
+  stopVideo();
+  const f = t.files.find((x) => x.index === file);
+  $('#pl-title').textContent = f?.name || t.fileName;
+  $('#pl-title').title = f?.path || t.fileName;
+  $('#pl-error').hidden = true;
+  setPlayerLoading('Fetching the first pieces…');
+  renderPlayerSelects(t);
+  const dlg = $('#dlg-player');
+  if (!dlg.open) dlg.showModal();
+  renderPlayerStats();
+  try {
+    const url = await invoke('torrent_stream_url', { id: t.id, file });
+    if (seq !== player.seq) return;
+    player.url = url;
+    const video = $('#pl-video');
+    video.src = url;
+    video.play().catch(() => {});
+    const sub = matchingSubtitle(t, f);
+    if (sub) {
+      $('#pl-subs').value = String(sub.index);
+      loadSubtitle(sub.index);
+    }
+  } catch (e) {
+    if (seq === player.seq) showPlayerError(String(e));
+  }
+}
+
+function setPlayerLoading(text) {
+  $('#pl-loading').hidden = !text;
+  if (text) $('#pl-loading span').textContent = text;
+}
+
+function showPlayerError(text = null) {
+  setPlayerLoading(null);
+  $('#pl-error').hidden = false;
+  $('#pl-error-text').textContent =
+    text || 'Its video or audio format is not supported here. Open it in an external player such as VLC or mpv — the torrent keeps streaming while it plays.';
+}
+
+const subtitleFiles = (t) => t.files.filter((f) => /\.(srt|vtt)$/i.test(f.name));
+const baseName = (name) => name.replace(/\.[^.]+$/, '').toLowerCase();
+
+/** A subtitle named like the video (movie.srt, movie.en.srt …). */
+function matchingSubtitle(t, video) {
+  if (!video) return null;
+  const base = baseName(video.name);
+  return subtitleFiles(t).find((s) => baseName(s.name) === base || baseName(s.name).startsWith(`${base}.`)) || null;
+}
+
+function renderPlayerSelects(t) {
+  const files = $('#pl-file');
+  const media = t.files.filter(isMedia);
+  files.innerHTML = media.map((f) => `<option value="${f.index}">${escapeHtml(f.name)}</option>`).join('');
+  files.value = String(player.file);
+  files.parentElement.hidden = media.length < 2;
+  const subs = $('#pl-subs');
+  const list = subtitleFiles(t);
+  subs.innerHTML = `<option value="">No subtitles</option>${list.map((f) => `<option value="${f.index}">${escapeHtml(f.name)}</option>`).join('')}`;
+  subs.parentElement.hidden = !list.length;
+}
+
+async function loadSubtitle(index) {
+  clearSubtitles();
+  if (index === '' || index == null) return;
+  const id = player.id;
+  const seq = player.seq;
+  try {
+    const vtt = await invoke('torrent_subtitle', { id, file: Number(index) });
+    if (seq !== player.seq) return;
+    player.subUrl = URL.createObjectURL(new Blob([vtt], { type: 'text/vtt' }));
+    const track = document.createElement('track');
+    track.kind = 'subtitles';
+    track.label = 'Subtitles';
+    track.srclang = 'und';
+    track.src = player.subUrl;
+    track.default = true;
+    $('#pl-video').append(track);
+    track.track.mode = 'showing';
+  } catch (e) {
+    toast(`Cannot load subtitles: ${e}`, 'error');
+  }
+}
+
+function renderPlayerStats() {
+  if (!$('#dlg-player').open || !player.id) return;
+  const t = state.downloads.get(player.id);
+  if (!t) return;
+  const f = t.files.find((x) => x.index === player.file);
+  const done = f && f.size && f.downloaded >= f.size;
+  $('#pl-stats').textContent = done
+    ? `Downloaded · ${fmtBytes(f.size)}${t.seeding ? ` · seeding ↑ ${fmtSpeed(t.uploadSpeed)}` : ''}`
+    : `${f ? `${Math.floor((f.downloaded / (f.size || 1)) * 100)}% of ${fmtBytes(f.size)}` : '—'} · ↓ ${fmtSpeed(t.speed)} · ${t.peers} peer${t.peers === 1 ? '' : 's'}`;
+}
+
+async function playExternal() {
+  if (!player.id) return;
+  const url = player.url || (await call('torrent_stream_url', { id: player.id, file: player.file }));
+  await call('play_external', { url, title: $('#pl-title').textContent });
+  $('#pl-video').pause();
+}
+
+function bindPlayer() {
+  const dlg = $('#dlg-player');
+  const video = $('#pl-video');
+  dlg.addEventListener('close', () => {
+    player.seq++;
+    player.id = null;
+    stopVideo();
+  });
+  video.addEventListener('playing', () => setPlayerLoading(null));
+  video.addEventListener('canplay', () => setPlayerLoading(null));
+  video.addEventListener('waiting', () => player.url && setPlayerLoading('Buffering…'));
+  video.addEventListener('error', () => {
+    if (player.url && video.getAttribute('src')) showPlayerError();
+  });
+  $('#pl-file').addEventListener('change', (e) => openPlayer(state.downloads.get(player.id), Number(e.target.value)));
+  $('#pl-subs').addEventListener('change', (e) => loadSubtitle(e.target.value));
+  $('#pl-external').addEventListener('click', playExternal);
+  $('#pl-error-external').addEventListener('click', playExternal);
+  $('#pl-copy').addEventListener('click', () => player.url && copyText(player.url));
+  dlg.addEventListener('keydown', (e) => {
+    if (e.target.closest('select, button')) return;
+    if (e.key === 'ArrowRight' || e.key === 'ArrowLeft') {
+      e.preventDefault();
+      video.currentTime = Math.max(0, video.currentTime + (e.key === 'ArrowRight' ? 10 : -10));
+    } else if (e.key.toLowerCase() === 'f') {
+      if (document.fullscreenElement) document.exitFullscreen();
+      else video.requestFullscreen?.();
+    } else if (e.key === ' ' && e.target !== video) {
+      e.preventDefault();
+      if (video.paused) video.play().catch(() => {});
+      else video.pause();
+    }
+  });
+}
+
 /* ---------- Settings dialog ---------- */
 
 function openSettings() {
@@ -927,6 +1425,15 @@ function openSettings() {
   $('#set-tray').checked = s.closeToTray;
   $('#set-notify').checked = s.notifyOnComplete;
   $$('#set-theme button').forEach((b) => b.classList.toggle('active', b.dataset.value === s.theme));
+  $('#set-tdir').value = s.torrentDir || '';
+  $('#set-sdir').value = s.streamDir || '';
+  $('#set-sdir').placeholder = state.torrentStatus?.streamDir || 'App cache folder';
+  $('#set-tdown').value = s.torrentDownloadLimit ? Math.round(s.torrentDownloadLimit / 1024) : '';
+  $('#set-tup').value = s.torrentUploadLimit ? Math.round(s.torrentUploadLimit / 1024) : '';
+  $('#set-tport').value = s.torrentPort || 0;
+  $('#set-player').value = s.externalPlayer || '';
+  selectUploadMode(s.torrentUploadMode);
+  renderTorrentStatus();
   if (state.appInfo) {
     $('#settings-version').textContent = `NBS Download Manager ${state.appInfo.version}`;
     $('#set-ext-ids').innerHTML = `Extension IDs: Chrome/Edge <code>${state.appInfo.chromeExtensionId}</code> · Firefox <code>${escapeHtml(state.appInfo.firefoxExtensionId)}</code>. Load the <code>extension</code> folder as an unpacked extension.`;
@@ -940,6 +1447,9 @@ async function submitSettings(e) {
   const kb = Number($('#set-limit').value || 0);
   const port = Number($('#set-port').value || 0);
   if (port < 1024 || port > 65535) return toast('Port must be between 1024 and 65535', 'error');
+  const tport = Number($('#set-tport').value || 0);
+  if (tport !== 0 && (tport < 1024 || tport > 65535)) return toast('Torrent port must be 0 or between 1024 and 65535', 'error');
+  const before = { ...state.settings };
   await saveSettings({
     downloadDir: $('#set-dir').value.trim() || state.settings.downloadDir,
     defaultConnections: Number($('#set-conn').dataset.value),
@@ -950,9 +1460,42 @@ async function submitSettings(e) {
     closeToTray: $('#set-tray').checked,
     notifyOnComplete: $('#set-notify').checked,
     theme: $('#set-theme button.active')?.dataset.value || 'dark',
+    torrentDir: $('#set-tdir').value.trim(),
+    streamDir: $('#set-sdir').value.trim(),
+    torrentDownloadLimit: kbToBytes($('#set-tdown').value),
+    torrentUploadLimit: kbToBytes($('#set-tup').value),
+    torrentPort: tport,
+    torrentUploadMode: $('#set-upmode button.active')?.dataset.value || 'normal',
+    externalPlayer: $('#set-player').value.trim(),
   });
   $('#dlg-settings').close('ok');
-  toast('Options saved', 'success');
+  const restart = before.streamDir !== state.settings.streamDir || before.torrentPort !== state.settings.torrentPort || (before.torrentUploadMode === 'disabled') !== (state.settings.torrentUploadMode === 'disabled');
+  toast(restart ? 'Options saved — some torrent options apply after restarting the app' : 'Options saved', 'success', restart ? 6000 : 3800);
+}
+
+const kbToBytes = (v) => (Number(v || 0) > 0 ? Math.round(Number(v) * 1024) : null);
+
+const UPLOAD_HELP = {
+  normal: 'Finished torrents keep uploading to other peers until you stop them.',
+  stopWhenDone: 'Torrents pause as soon as they are complete. Finished files can still be played.',
+  disabled: 'Nothing is ever sent to other peers; downloads can be slower. Applies after a restart.',
+};
+
+function selectUploadMode(mode) {
+  $$('#set-upmode button').forEach((b) => b.classList.toggle('active', b.dataset.value === mode));
+  $('#set-upmode-help').textContent = UPLOAD_HELP[mode] || '';
+}
+
+function renderTorrentStatus() {
+  const t = state.torrentStatus;
+  const el = $('#set-torrent-status');
+  if (!t) return;
+  const [cls, text] = t.error
+    ? ['dot err', `Torrent engine failed to start: ${t.error}`]
+    : t.ready
+      ? ['dot ok', `Torrent engine running${t.info.listenPort ? ` — listening on port ${t.info.listenPort}` : ''}${t.info.uploadDisabled ? ' · upload disabled' : ''}`]
+      : ['dot', 'Torrent engine starting…'];
+  el.innerHTML = `<span class="${cls}"></span><span>${escapeHtml(text)}</span>`;
 }
 
 /* ---------- Wiring ---------- */
@@ -994,11 +1537,13 @@ function bindUi() {
   $('#quick-add').addEventListener('submit', (e) => {
     e.preventDefault();
     const url = $('#quick-url').value.trim();
-    if (url && !isUrl(url)) return toast('That does not look like an http(s) link', 'error');
+    if (isTorrentLink(url)) return openTorrentDialog({ link: url });
+    if (url && !isUrl(url)) return toast('That does not look like an http(s) or magnet link', 'error');
     openAddDialog({ url });
   });
-  $('#tool-resume').addEventListener('click', () => selectedDownloads().filter(canResume).forEach((d) => call('resume_download', { id: d.id })));
-  $('#tool-pause').addEventListener('click', () => selectedDownloads().filter(canPause).forEach((d) => call('pause_download', { id: d.id })));
+  $('#tool-torrent').addEventListener('click', () => openTorrentDialog());
+  $('#tool-resume').addEventListener('click', () => selectedDownloads().filter(canResume).forEach(resumeItem));
+  $('#tool-pause').addEventListener('click', () => selectedDownloads().filter(canPause).forEach(pauseItem));
   $('#tool-stop-all').addEventListener('click', () => call('pause_all'));
   $('#tool-delete').addEventListener('click', () => deleteDownloads(selectedDownloads()));
   $('#tool-clear').addEventListener('click', () => call('clear_completed'));
@@ -1011,7 +1556,12 @@ function bindUi() {
     renderDrawer();
   });
   $('#d-toggle').addEventListener('click', () => primaryAction(state.downloads.get(state.focus)));
-  $('#d-folder').addEventListener('click', () => call('reveal_download', { id: state.focus }));
+  $('#d-play').addEventListener('click', () => {
+    const t = state.downloads.get(state.focus);
+    const media = t && bestMedia(t);
+    if (media) openPlayer(t, media.index);
+  });
+  $('#d-folder').addEventListener('click', () => revealItem(state.downloads.get(state.focus)));
   $('#d-more').addEventListener('click', (e) => {
     e.stopPropagation();
     const r = e.currentTarget.getBoundingClientRect();
@@ -1039,8 +1589,52 @@ function bindUi() {
     if (dir) $('#add-dir').value = dir;
   });
 
+  // Torrent dialog & player
+  $('#torrent-form').addEventListener('submit', (e) => {
+    e.preventDefault();
+    addTorrent('download');
+  });
+  $('#tor-stream').addEventListener('click', () => addTorrent('stream'));
+  $('#tor-link').addEventListener('input', () => {
+    torState.open = { link: $('#tor-link').value.trim(), headers: [], source: null };
+    clearTimeout(torState.timer);
+    torState.timer = setTimeout(inspectTorrent, 500);
+  });
+  $('#tor-file').addEventListener('click', async () => {
+    const path = await call('pick_torrent_file');
+    if (!path) return;
+    torState.open = { path, headers: [], source: null };
+    $('#tor-link').value = path;
+    inspectTorrent();
+  });
+  $('#tor-browse').addEventListener('click', async () => {
+    const dir = await call('pick_folder', { current: $('#tor-dir').value });
+    if (dir) $('#tor-dir').value = dir;
+  });
+  $('#tor-all').addEventListener('click', () => selectTorFiles(() => true));
+  $('#tor-none').addEventListener('click', () => selectTorFiles(() => false));
+  $('#tor-videos').addEventListener('click', () => selectTorFiles((f) => f.kind === 'video' || f.kind === 'subtitle'));
+  $('#dlg-torrent').addEventListener('close', () => {
+    torState.seq++;
+    clearTimeout(torState.timer);
+    if (torState.queue.length) setTimeout(() => openTorrentDialog(torState.queue.shift()), 150);
+  });
+  bindPlayer();
+
   // Settings dialog
   $('#settings-form').addEventListener('submit', submitSettings);
+  for (const [button, input, cmd] of [
+    ['#set-tbrowse', '#set-tdir', 'pick_folder'],
+    ['#set-sbrowse', '#set-sdir', 'pick_folder'],
+    ['#set-pbrowse', '#set-player', 'pick_player'],
+  ]) {
+    $(button).addEventListener('click', async () => {
+      const path = await call(cmd, cmd === 'pick_folder' ? { current: $(input).value || $(input).placeholder } : undefined);
+      if (path) $(input).value = path;
+    });
+  }
+  $$('#set-upmode button').forEach((b) => b.addEventListener('click', () => selectUploadMode(b.dataset.value)));
+  $('#set-magnet').addEventListener('click', async () => toast(await call('register_magnet_handler'), 'success', 7000));
   $('#set-browse').addEventListener('click', async () => {
     const dir = await call('pick_folder', { current: $('#set-dir').value });
     if (dir) $('#set-dir').value = dir;
@@ -1066,7 +1660,8 @@ function bindUi() {
   document.addEventListener('paste', (e) => {
     if (e.target.closest('input, textarea') || $('dialog[open]')) return;
     const text = e.clipboardData?.getData('text')?.trim();
-    if (isUrl(text)) openAddDialog({ url: text });
+    if (isTorrentLink(text)) openTorrentDialog({ link: text });
+    else if (isUrl(text)) openAddDialog({ url: text });
   });
   matchMedia('(prefers-color-scheme: light)').addEventListener('change', applyTheme);
 }
@@ -1081,6 +1676,10 @@ function onKey(e) {
   if (mod && e.key.toLowerCase() === 'n') {
     e.preventDefault();
     return openAddDialog();
+  }
+  if (mod && e.key.toLowerCase() === 't' && !$('dialog[open]')) {
+    e.preventDefault();
+    return openTorrentDialog();
   }
   if (mod && e.key.toLowerCase() === 'f') {
     e.preventDefault();
@@ -1111,15 +1710,18 @@ function onKey(e) {
 
 async function init() {
   bindUi();
-  const [settings, downloads, bridge, appInfo] = await Promise.all([
+  const [settings, downloads, bridge, appInfo, torrents, torrentStatus] = await Promise.all([
     invoke('get_settings'),
     invoke('list_downloads'),
     invoke('bridge_status'),
     invoke('app_info'),
+    invoke('torrent_list'),
+    invoke('torrent_status'),
   ]);
-  Object.assign(state, { settings, bridge, appInfo });
+  Object.assign(state, { settings, bridge, appInfo, torrentStatus });
   $('#app-version').textContent = appInfo.version;
   downloads.forEach(upsert);
+  torrents.forEach(upsert);
   applyTheme();
   renderGlobalLimit();
   renderBridge();
@@ -1131,15 +1733,7 @@ async function init() {
     renderList();
   });
   await listen('download://progress', (e) => onProgress(e.payload));
-  await listen('download://removed', (e) => {
-    const id = e.payload;
-    state.downloads.delete(id);
-    state.rows.get(id)?.remove();
-    state.rows.delete(id);
-    state.selected.delete(id);
-    if (state.focus === id) state.focus = null;
-    renderList();
-  });
+  await listen('download://removed', (e) => removeItem(e.payload));
   await listen('download://completed', (e) => {
     toast(`Download complete: ${e.payload.fileName}`, 'success');
     refreshDisk();
@@ -1153,6 +1747,35 @@ async function init() {
     openAddDialog({ url: p.url, fileName: p.fileName || '', headers: p.headers || [], fileSize: p.fileSize, source: 'browser' });
   });
   await listen('bridge://captured', (e) => toast(`Captured from browser: ${e.payload.fileName}`, 'success'));
+
+  await listen('torrent://updated', (e) => {
+    upsert(e.payload);
+    renderList();
+    renderPlayerStats();
+  });
+  await listen('torrent://progress', (e) => {
+    onProgress(e.payload);
+    renderPlayerStats();
+  });
+  await listen('torrent://removed', (e) => {
+    if (player.id === e.payload) $('#dlg-player').close();
+    removeItem(e.payload);
+  });
+  await listen('torrent://completed', (e) => {
+    if (!e.payload.stream) toast(`Torrent complete: ${e.payload.fileName}`, 'success');
+    refreshDisk();
+  });
+  await listen('torrent://status', (e) => {
+    state.torrentStatus = e.payload;
+    renderTorrentStatus();
+    if (e.payload.error) toast(`Torrent engine failed to start: ${e.payload.error}`, 'error', 10000);
+  });
+  await listen('torrent://open-request', takeTorrentOpens);
+  await listen('tauri://drag-drop', (e) => {
+    const paths = (e.payload?.paths || []).filter((p) => /\.torrent$/i.test(p));
+    paths.forEach((path) => openTorrentDialog({ path }));
+  });
+  takeTorrentOpens();
 
   setInterval(() => {
     state.speedHistory.push(renderStatusbar());

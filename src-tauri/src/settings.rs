@@ -2,6 +2,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use nbs_core::{EngineConfig, MAX_CONNECTIONS};
+use nbs_torrent::UploadMode;
 use serde::{Deserialize, Serialize};
 
 pub const DEFAULT_BRIDGE_PORT: u16 = 18765;
@@ -22,6 +23,19 @@ pub struct Settings {
     pub notify_on_complete: bool,
     /// "system", "light" or "dark".
     pub theme: String,
+    /// Default folder for torrents; empty = `download_dir`.
+    pub torrent_dir: PathBuf,
+    /// Where streamed torrents are kept; empty = the app's cache folder.
+    /// Applies after a restart.
+    pub stream_dir: PathBuf,
+    /// BitTorrent listen port; 0 = random. Applies after a restart.
+    pub torrent_port: u16,
+    /// Bytes per second for all torrents; `None` = unlimited.
+    pub torrent_download_limit: Option<u64>,
+    pub torrent_upload_limit: Option<u64>,
+    pub torrent_upload_mode: UploadMode,
+    /// Media player for "Open in player"; empty = the system default.
+    pub external_player: String,
 }
 
 impl Default for Settings {
@@ -36,6 +50,13 @@ impl Default for Settings {
             close_to_tray: true,
             notify_on_complete: true,
             theme: "dark".into(),
+            torrent_dir: PathBuf::new(),
+            stream_dir: PathBuf::new(),
+            torrent_port: 0,
+            torrent_download_limit: None,
+            torrent_upload_limit: None,
+            torrent_upload_mode: UploadMode::Normal,
+            external_player: String::new(),
         }
     }
 }
@@ -69,7 +90,17 @@ impl Settings {
         if !matches!(self.theme.as_str(), "system" | "light" | "dark") {
             self.theme = "system".into();
         }
+        self.torrent_download_limit = self.torrent_download_limit.filter(|l| *l > 0);
+        self.torrent_upload_limit = self.torrent_upload_limit.filter(|l| *l > 0);
         self
+    }
+
+    pub fn torrent_download_dir(&self) -> PathBuf {
+        if self.torrent_dir.as_os_str().is_empty() {
+            self.download_dir.clone()
+        } else {
+            self.torrent_dir.clone()
+        }
     }
 
     pub fn apply_to(&self, config: &mut EngineConfig) {

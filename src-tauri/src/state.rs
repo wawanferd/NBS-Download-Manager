@@ -6,10 +6,12 @@ use parking_lot::Mutex;
 
 use crate::bridge::Bridge;
 use crate::settings::Settings;
+use crate::torrent::Torrents;
 
 pub struct AppState {
     pub manager: DownloadManager,
     pub settings: Mutex<Settings>,
     pub settings_path: PathBuf,
     pub bridge: Arc<Bridge>,
+    pub torrents: Arc<Torrents>,
 }
