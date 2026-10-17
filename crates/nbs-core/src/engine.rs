@@ -323,14 +323,18 @@ async fn run_inner(core: &Arc<Core>, h: &Arc<Handle>, cancel: &CancellationToken
 }
 
 /// Appends every finished segment that directly follows the merged prefix.
+///
+/// A worker claims its last bytes in the record before writing and flushing
+/// them, so a segment counts as finished only once its worker has returned.
 async fn merge_ready(h: &Arc<Handle>, temp: &Path) -> Result<()> {
     loop {
         let next = {
             let rec = h.record.lock();
+            let active = h.active_segments.lock();
             let merged = rec.merged_bytes;
             rec.segments
                 .iter()
-                .find(|s| !s.merged && s.start == merged && s.is_complete())
+                .find(|s| !s.merged && s.start == merged && s.is_complete() && !active.contains(&s.id))
                 .map(|s| (s.id, s.len.unwrap_or(0), merged))
         };
         let Some((id, len, merged)) = next else { return Ok(()) };
